@@ -39,30 +39,58 @@ __kernel void evolve(
 	int sw = lw + 2;
 	int sxy = sy*sw + sx;
 
-	s_labels_in[sxy] = labels_in[gxy];
-	s_strength_in[sxy]  = strength_in[gxy];
-	s_img[sxy]       = img[gxy];
+	s_labels_in[sxy]   = labels_in[gxy];
+	s_strength_in[sxy] = strength_in[gxy];
+	s_img[sxy]         = img[gxy];
 
 	//load padding
 	if (ly == 0) { //top
-		s_labels_in[sxy-sw] = labels_in[gxy-imgW];
-		s_strength_in[sxy-sw]  = strength_in[gxy-imgW];
-		s_img[sxy-sw]       = img[gxy-imgW];
+		if (gy == 0) {
+			s_labels_in[sxy-sw]   = 0;
+			s_strength_in[sxy-sw] = 0;
+			s_img[sxy-sw]         = 0;
+		}
+		else {
+			s_labels_in[sxy-sw]   = labels_in[gxy-imgW];
+			s_strength_in[sxy-sw] = strength_in[gxy-imgW];
+			s_img[sxy-sw]         = img[gxy-imgW];
+		}
 	}
 	if (ly == lh-1) { //bottom
-		s_labels_in[sxy+sw] = labels_in[gxy+imgW];
-		s_strength_in[sxy+sw]  = strength_in[gxy+imgW];
-		s_img[sxy+sw]       = img[gxy+imgW];
+		if (gy == gh-1) {
+			s_labels_in[sxy+sw]   = 0;
+			s_strength_in[sxy+sw] = 0;
+			s_img[sxy+sw]         = 0;
+		}
+		else {
+			s_labels_in[sxy+sw]   = labels_in[gxy+imgW];
+			s_strength_in[sxy+sw] = strength_in[gxy+imgW];
+			s_img[sxy+sw]         = img[gxy+imgW];
+		}
 	}
 	if (lx == 0) { //left
-		s_labels_in[sxy-1] = labels_in[gxy-1];
-		s_strength_in[sxy-1]  = strength_in[gxy-1];
-		s_img[sxy-1]       = img[gxy-1];
+		if (gx == 0) {
+			s_labels_in[sxy-1]   = 0;
+			s_strength_in[sxy-1] = 0;
+			s_img[sxy-1]         = 0;
+		}
+		else {
+			s_labels_in[sxy-1]   = labels_in[gxy-1];
+			s_strength_in[sxy-1] = strength_in[gxy-1];
+			s_img[sxy-1]         = img[gxy-1];
+		}
 	}
 	if (lx == lw-1) { //right
-		s_labels_in[sxy+1] = labels_in[gxy+1];
-		s_strength_in[sxy+1]  = strength_in[gxy+1];
-		s_img[sxy+1]       = img[gxy+1];
+		if (gx == gw-1) {
+			s_labels_in[sxy+1]   = 0;
+			s_strength_in[sxy+1] = 0;
+			s_img[sxy+1]         = 0;
+		}
+		else {
+			s_labels_in[sxy+1]   = labels_in[gxy+1];
+			s_strength_in[sxy+1] = strength_in[gxy+1];
+			s_img[sxy+1]         = img[gxy+1];
+		}
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);

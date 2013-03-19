@@ -3,7 +3,7 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os
-from clutil import roundUp, padArray2D, createProgram
+from clutil import roundUp, padArray2D, createProgram, isPow2
 
 NEIGHBOURHOOD_VON_NEUMANN = 0
 NEIGHBOURHOOD_MOORE = 1
@@ -15,7 +15,9 @@ szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
 
 class GrowCut():
-	def __init__(self, context, devices, img):
+	lw = LWORKGROUP
+
+	def __init__(self, context, devices, img, imgW=None, imgH=None):
 		self.context = context
 
 		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
@@ -23,16 +25,25 @@ class GrowCut():
 
 		self.kernEvolve = cl.Kernel(program, 'evolve')
 
-		self.lw = LWORKGROUP
+		if type(img) == np.ndarray:
+			imgW = img.size[0]
+			imgH = img.size[1]
+			shapeNP = (img.size[1], img.size[0])
 
-		imgW = img.size[0]
-		imgH = img.size[1]
-		shapeNP = (img.size[1], img.size[0])
+			hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, self.lw), 'edge')
 
-		hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, self.lw), 'edge')
+			shapeCL = (hImg.shape[1], hImg.shape[0])
+			shapeNP = hImg.shape
 
-		shapeCL = (hImg.shape[1], hImg.shape[0])
-		shapeNP = hImg.shape
+			self.dImg = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=hImg)
+		else:
+			if imgW == None or imgH == None:
+				raise ValueError("CL Buffer width or height not provided")
+
+			shapeCL = (imgW, imgH)
+			shapeNP = (imgH, imgW)
+
+			self.dImg = img
 
 		self.hLabelsIn = np.zeros(shapeNP, np.int32)
 		self.hLabelsOut = np.empty(shapeNP, np.int32)
@@ -42,7 +53,6 @@ class GrowCut():
 
 		self.hHasConverged[0] = False
 
-		self.dImg = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=hImg)
 		self.dLabelsIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsIn)
 		self.dLabelsOut = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsOut)
 		self.dStrengthIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthIn)
@@ -104,23 +114,14 @@ if __name__ == "__main__":
 
 	colorize = Colorize(context, devices)
 
-	growCut = GrowCut(context, devices, img)
+	shapeNP = (img.size[1], img.size[0])
+	shapeNP = roundUp(shapeNP, GrowCut.lw)
+	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-	growCut.hLabelsIn[100:125, 100:125] = 1
-	growCut.hLabelsIn[300:325, 300:325] = 2
+	vLabels = window.addView(hImg.shape, 'Labels')
+	vImg = window.addViewNp(hImg, 'Image')
 
-	growCut.hStrengthIn[100:125, 100:125] = 1
-	growCut.hStrengthIn[300:325, 300:325] = 1
-
-	cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
-	cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
-
-	growCut.evolve(queue)
-
-	shapeView = roundUp((img.size[1], img.size[0]), growCut.lw)
-	shapeView = roundUp((img.size[1], img.size[0]), (16, 16))
-	vLabels = window.addView(shapeView, 'Labels')
-	vImg = window.addViewNp(np.array(img).view(np.uint32), 'Image')
+	growCut = GrowCut(context, devices, vImg, shapeNP[1], shapeNP[0])
 
 	reversedHue = (240, 0)
 	def mapLabels():
@@ -151,12 +152,20 @@ if __name__ == "__main__":
 		cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
 		cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
 
+	def keyPress(key):
+		global label
+
+		if key   == QtCore.Qt.Key_0: label = 0
+		elif key == QtCore.Qt.Key_1: label = 1
+		elif key == QtCore.Qt.Key_2: label = 2
+		elif key == QtCore.Qt.Key_3: label = 3
+
 	timer = QtCore.QTimer()
 	timer.timeout.connect(next)
 
-	window.addButton("intercept", intercept)
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.setMousePress(mousePress)
+	window.setKeyPress(keyPress)
 
 	window.show()
 	sys.exit(app.exec_())
