@@ -13,6 +13,17 @@ except ImportError:
 from OpenGL.raw.GL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
 
 class GLCanvas(QtOpenGL.QGLWidget):
+	class View:
+		def __init__(self, pbo, tex, dBuf, shape, pos, enabled=True, opacity=1, map=None):
+			self.opacity = opacity
+			self.shape = shape
+			self.pbo = pbo
+			self.tex = tex
+			self.enabled = enabled
+			self.dBuf = dBuf
+			self.map = map
+			self.pos = pos
+
 	def __init__(self, width, height, parent=None):
 		super(GLCanvas, self).__init__(parent)
 
@@ -95,22 +106,30 @@ class GLCanvas(QtOpenGL.QGLWidget):
 			if not layer.enabled or layer.opacity == 0:
 				continue
 
+			if layer.pos:
+				glPushMatrix()
+				glLoadIdentity()
+				glTranslatef(layer.pos[1], layer.pos[0], 0)
+
 			glColor4f(1.0, 1.0, 1.0, layer.opacity);
 
 			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, layer.pbo)
 			glBindTexture(GL_TEXTURE_2D, layer.tex)
-			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, self.width, self.height, GL_RGBA, GL_UNSIGNED_BYTE, None)
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[1], layer.shape[0], GL_RGBA, GL_UNSIGNED_BYTE, None)
 
 			glBegin(GL_QUADS)
-			glVertex2i(0,0)
-			glTexCoord2i(0,0)
-			glVertex2i(0, self.height)
-			glTexCoord2i(1,0)
-			glVertex2i(self.width, self.height)
-			glTexCoord2i(1,1)
-			glVertex2i(self.width, 0)
-			glTexCoord2i(0,1)
+			glVertex2i(0, 0)
+			glTexCoord2i(0, 0)
+			glVertex2i(0, layer.shape[0])
+			glTexCoord2i(1, 0)
+			glVertex2i(layer.shape[1], layer.shape[0])
+			glTexCoord2i(1, 1)
+			glVertex2i(layer.shape[1], 0)
+			glTexCoord2i(0, 1)
 			glEnd()
+
+			if layer.pos:
+				glPopMatrix()
 
 		glDisable(GL_BLEND)
 

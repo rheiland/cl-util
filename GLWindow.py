@@ -10,6 +10,8 @@ from pyopencl.tools import get_gl_sharing_context_properties
 from Colorize import Colorize
 import numpy as np
 
+
+
 try:
 	from OpenGL.GL import *
 except ImportError:
@@ -37,18 +39,6 @@ class GLWindow(QtGui.QMainWindow):
 				QtGui.QScrollArea.eventFilter(self, object, event)
 
 			return False
-
-	class View:
-		def __init__(self, name, desc, pbo, tex, dBuf, shape, enabled=True, opacity=1, map=None):
-			self.name = name
-			self.desc = desc
-			self.opacity = opacity
-			self.shape = shape
-			self.pbo = pbo
-			self.tex = tex
-			self.enabled = enabled
-			self.dBuf = dBuf
-			self.map = map
 
 	def __init__(self, shape=(DEFAULT_HEIGHT, DEFAULT_WIDTH)):
 		super(GLWindow, self).__init__(None)
@@ -111,6 +101,8 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.colorize = Colorize(self.context, self.context.devices)
 
+		self.installEventFilter(self)
+
 	def addButton(self, name, action):
 		btn = QtGui.QPushButton(name)
 		self.widgetButtons.layout().addWidget(btn)
@@ -167,7 +159,9 @@ class GLWindow(QtGui.QMainWindow):
 
 		view = cl.GLBuffer(self.context, cl.mem_flags.READ_ONLY, int(pbo))
 
-		layer = self.View(name, '', pbo, tex, view, shape)
+		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])
+
+		layer = GLCanvas.View(pbo, tex, view, shape, pos)
 		self.layers.append(layer)
 
 		item = QtGui.QListWidgetItem(name)
@@ -252,3 +246,14 @@ class GLWindow(QtGui.QMainWindow):
 
 	def setMousePress(self, func):
 		self.canvas.mousePress = func
+
+	def setKeyPress(self, func):
+		self.keyPress = func
+
+	def eventFilter(self, object, event):
+		if hasattr(self, 'keyPress') and event.type() == QtCore.QEvent.KeyPress:
+			self.keyPress(event.key())
+
+			return True
+
+		return False

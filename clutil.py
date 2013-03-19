@@ -14,6 +14,9 @@ def pow2gt(x):
 
 	return i
 
+def isPow2(x):
+	return (x != 0) and ((x & (x - 1)) == 0)
+
 def ceil_divi(dividend, divisor):
 	return (dividend + divisor - 1) / divisor
 
