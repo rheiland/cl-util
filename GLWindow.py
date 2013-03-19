@@ -26,6 +26,18 @@ szInt = np.dtype(np.int32).itemsize
 class GLWindow(QtGui.QMainWindow):
 	layers = []
 
+	class CenteredScrollArea(QtGui.QScrollArea):
+		def __init__(self, parent=None):
+			QtGui.QScrollArea.__init__(self, parent)
+
+		def eventFilter(self, object, event):
+			if object == self.widget() and event.type() == QtCore.QEvent.Resize:
+				QtGui.QScrollArea.eventFilter(self, object, event)
+			else:
+				QtGui.QScrollArea.eventFilter(self, object, event)
+
+			return False
+
 	class View:
 		def __init__(self, name, desc, pbo, tex, dBuf, shape, enabled=True, opacity=1, map=None):
 			self.name = name
@@ -62,21 +74,22 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.canvas = GLCanvas(width, height)
 		self.canvas.layers = self.layers
-		self.canvas.installEventFilter(self)
 
-		self.scrollarea = QtGui.QScrollArea()
+		self.scrollarea = self.CenteredScrollArea()
 		self.scrollarea.setWidget(self.canvas)
-		self.scrollarea.setWidgetResizable(True)
+		self.scrollarea.setAlignment(QtCore.Qt.AlignCenter)
 
 		layoutButtons = QtGui.QHBoxLayout()
 		self.widgetButtons = QtGui.QWidget()
 		self.widgetButtons.setLayout(layoutButtons)
 
 		self.sliderZoom = QtGui.QSlider(QtCore.Qt.Horizontal)
-		self.sliderZoom.setRange(0, 400)
+		self.sliderZoom.setRange(100, 400)
 		self.sliderZoom.setSingleStep(1)
-		self.sliderZoom.setTickInterval(10)
+		self.sliderZoom.setTickInterval(100)
+		self.sliderZoom.setTickPosition(QtGui.QSlider.TicksBelow)
 		self.sliderZoom.valueChanged.connect(self.sigZoom)
+		self.sliderZoom.setValue(100)
 
 		layout = QtGui.QGridLayout(self)
 		layout.addWidget(self.slider)
@@ -97,8 +110,6 @@ class GLWindow(QtGui.QMainWindow):
 		self.initCL()
 
 		self.colorize = Colorize(self.context, self.context.devices)
-
-		self.setMaximumSize(800, 600)
 
 	def addButton(self, name, action):
 		btn = QtGui.QPushButton(name)
@@ -239,18 +250,5 @@ class GLWindow(QtGui.QMainWindow):
 	def setZoom(self, zoom):
 		self.canvas.setZoom(float(zoom)/100)
 
-	def eventFilter(self, object, event):
-		if object == self.canvas:
-			if hasattr(self, 'mouseDrag') and event.type() == QtCore.QEvent.MouseButtonRelease:
-
-				self.mouseDrag((self.lastPos.x(), self.lastPos.y()), (event.pos().x(), event.pos().y()))
-
-				return True
-			if hasattr(self, 'mousePress') and event.type() == QtCore.QEvent.MouseButtonPress:
-				self.lastPos = event.pos()
-
-				self.mousePress((event.pos().x(), event.pos().y()))
-
-				return True
-
-		return False
+	def setMousePress(self, func):
+		self.canvas.mousePress = func

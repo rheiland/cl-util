@@ -29,7 +29,14 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.transY = 1
 		self.flag = 0
 
+		self.viewW = width
+		self.viewH = height
+
+		self.resize(self.zoom*self.width, self.zoom*self.height)
+
 		self.initializeGL()
+
+		self.installEventFilter(self)
 
 	def setZoom(self, value):
 		self.zoom = value
@@ -64,15 +71,14 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		glFlush()
 
 	def paintGL(self):
-		glViewport(0, 0, self.width, self.height)
+		glViewport(0, 0, self.viewW, self.viewH)
 		glMatrixMode(GL_PROJECTION)
 		glLoadIdentity()
-		glOrtho(0, self.width, 0, self.height, -1, 1)
+		glOrtho(0, self.viewW, 0, self.viewH, -1, 1)
 		glTranslatef(self.transX, self.transY, 0)
 		glScalef(self.zoom, self.zoom, 1)
 		glMatrixMode(GL_MODELVIEW)
 		glLoadIdentity()
-		#glTranslatef(-self.transX, -self.transY, 0)
 
 		glClear(GL_COLOR_BUFFER_BIT)
 
@@ -108,15 +114,26 @@ class GLCanvas(QtOpenGL.QGLWidget):
 
 		glDisable(GL_BLEND)
 
-		#glEnable(GL_BLEND)
-		#glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-		#glDisable(GL_BLEND)
-
 	def resizeGL(self, width, height):
 		self.initializeGL()
 
 		self.paintGL()
 
-	def setW(self, w):
-		self.w = w
-		print self.w
+	def eventFilter(self, object, event):
+		if hasattr(self, 'mouseDrag') and event.type() == QtCore.QEvent.MouseButtonRelease:
+
+			point = (event.pos().x()/self.zoom, event.pos().y()/self.zoom)
+
+			self.mouseDrag(self.lastMousePos, point)
+
+			return True
+		if hasattr(self, 'mousePress') and event.type() == QtCore.QEvent.MouseButtonPress:
+			point = (event.pos().x()/self.zoom, event.pos().y()/self.zoom)
+
+			self.lastMousePos = point
+
+			self.mousePress(point)
+
+			return True
+
+		return False

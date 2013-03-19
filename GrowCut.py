@@ -98,65 +98,65 @@ if __name__ == "__main__":
 
 	app = QtGui.QApplication(sys.argv)
 	window = GLWindow((img.size[1], img.size[0]))
-#	context = window.context
-#	devices = context.get_info(cl.context_info.DEVICES)
-#	queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
-#
-#	colorize = Colorize(context, devices)
-#
-#	growCut = GrowCut(context, devices, img)
-#
-#	growCut.hLabelsIn[100:125, 100:125] = 1
-#	growCut.hLabelsIn[300:325, 300:325] = 2
-#
-#	growCut.hStrengthIn[100:125, 100:125] = 1
-#	growCut.hStrengthIn[300:325, 300:325] = 1
-#
-#	cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
-#	cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
-#
-#	growCut.evolve(queue)
-#
-#	shapeView = roundUp((img.size[1], img.size[0]), growCut.lw)
+	context = window.context
+	devices = context.get_info(cl.context_info.DEVICES)
+	queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
+
+	colorize = Colorize(context, devices)
+
+	growCut = GrowCut(context, devices, img)
+
+	growCut.hLabelsIn[100:125, 100:125] = 1
+	growCut.hLabelsIn[300:325, 300:325] = 2
+
+	growCut.hStrengthIn[100:125, 100:125] = 1
+	growCut.hStrengthIn[300:325, 300:325] = 1
+
+	cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
+	cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
+
+	growCut.evolve(queue)
+
+	shapeView = roundUp((img.size[1], img.size[0]), growCut.lw)
 	shapeView = roundUp((img.size[1], img.size[0]), (16, 16))
 	vLabels = window.addView(shapeView, 'Labels')
 	vImg = window.addViewNp(np.array(img).view(np.uint32), 'Image')
-#
-#	reversedHue = (240, 0)
-#	def mapLabels():
-#		m = 0
-#		M = 2
-#		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), hue=reversedHue, dOut=vLabels, typeIn=np.int32)
-#
-#	window.setMap(vLabels, mapLabels)
-#
-#	label = 1
-#
-#	def intercept():
-#		global label
-#		label = not label
-#		pass
-#
-#	def next():
-#		growCut.evolve(queue)
-#		window.updateCanvas()
-#
-#	def mousePress(pos):
-#		cl.enqueue_copy(queue, growCut.hLabelsIn, growCut.dLabelsIn).wait()
-#		cl.enqueue_copy(queue, growCut.hStrengthIn, growCut.dStrengthIn).wait()
-#
-#		growCut.hLabelsIn[pos[1], pos[0]] = label
-#		growCut.hStrengthIn[pos[1], pos[0]] = 1
-#
-#		cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
-#		cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
-#
-#	timer = QtCore.QTimer()
-#	timer.timeout.connect(next)
-#
-#	window.addButton("intercept", intercept)
-#	window.addButton("start", functools.partial(timer.start, 0))
-#	window.mousePress = mousePress
+
+	reversedHue = (240, 0)
+	def mapLabels():
+		m = 0
+		M = 2
+		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), hue=reversedHue, dOut=vLabels, typeIn=np.int32)
+
+	window.setMap(vLabels, mapLabels)
+
+	label = 1
+
+	def intercept():
+		global label
+		label = not label
+		pass
+
+	def next():
+		growCut.evolve(queue)
+		window.updateCanvas()
+
+	def mousePress(pos):
+		cl.enqueue_copy(queue, growCut.hLabelsIn, growCut.dLabelsIn).wait()
+		cl.enqueue_copy(queue, growCut.hStrengthIn, growCut.dStrengthIn).wait()
+
+		growCut.hLabelsIn[pos[1], pos[0]] = label
+		growCut.hStrengthIn[pos[1], pos[0]] = 1
+
+		cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
+		cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
+
+	timer = QtCore.QTimer()
+	timer.timeout.connect(next)
+
+	window.addButton("intercept", intercept)
+	window.addButton("start", functools.partial(timer.start, 0))
+	window.setMousePress(mousePress)
 
 	window.show()
 	sys.exit(app.exec_())
