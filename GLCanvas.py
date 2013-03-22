@@ -3,6 +3,7 @@ __author__ = 'Marc de Klerk'
 import sys
 
 from PyQt4 import QtCore, QtGui, QtOpenGL
+import numpy as np
 
 try:
 	from OpenGL.GL import *
@@ -10,19 +11,37 @@ except ImportError:
 	app = QtGui.QApplication(sys.argv)
 	QtGui.QMessageBox.critical(None, "Application Error", "error importing PyOpenGL")
 	sys.exit(1)
-from OpenGL.raw.GL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
+from OpenGL.raw.GoL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
+
+szFloat = np.dtype(np.float32).itemsize
+szInt = np.dtype(np.int32).itemsize
 
 class GLCanvas(QtOpenGL.QGLWidget):
 	class View:
-		def __init__(self, pbo, tex, dBuf, shape, pos, enabled=True, opacity=1, map=None):
+		def __init__(self, shape, pos, enabled=True, opacity=1.0, pbo=False):
 			self.opacity = opacity
 			self.shape = shape
-			self.pbo = pbo
-			self.tex = tex
 			self.enabled = enabled
-			self.dBuf = dBuf
 			self.map = map
 			self.pos = pos
+			self.pbo = False
+
+			if pbo:
+				self.pbo = glGenBuffers(1)
+				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self.pbo)
+				glBufferData(GL_PIXEL_UNPACK_BUFFER, szInt*width*height, None, GL_STATIC_DRAW)
+
+			self.tex = glGenTextures(1)
+
+			glBindTexture(GL_TEXTURE_2D, self.tex)
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, shape[1], shape[0], 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+
+			glFinish()
 
 	def __init__(self, width, height, parent=None):
 		super(GLCanvas, self).__init__(parent)
@@ -113,9 +132,12 @@ class GLCanvas(QtOpenGL.QGLWidget):
 
 			glColor4f(1.0, 1.0, 1.0, layer.opacity);
 
-			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, layer.pbo)
-			glBindTexture(GL_TEXTURE_2D, layer.tex)
-			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[1], layer.shape[0], GL_RGBA, GL_UNSIGNED_BYTE, None)
+			if layer.pbo:
+				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, layer.pbo)
+				glBindTexture(GL_TEXTURE_2D, layer.tex)
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[0], layer.shape[1], GL_RGBA, GL_UNSIGNED_BYTE, None)
+			else:
+				glBindTexture(GL_TEXTURE_2D, layer.tex)
 
 			glBegin(GL_QUADS)
 			glVertex2i(0, 0)
@@ -139,19 +161,22 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.paintGL()
 
 	def eventFilter(self, object, event):
-		if hasattr(self, 'mouseDrag') and event.type() == QtCore.QEvent.MouseButtonRelease:
+		if hasattr(self, 'mouseDrag') and \
+		   (event.type() == QtCore.QEvent.MouseMove and event.buttons() == QtCore.Qt.LeftButton):
 
-			point = (event.pos().x()/self.zoom, event.pos().y()/self.zoom)
+			point = (int(event.pos().x()/self.zoom), int(event.pos().y()/self.zoom))
 
 			self.mouseDrag(self.lastMousePos, point)
 
-			return True
-		if hasattr(self, 'mousePress') and event.type() == QtCore.QEvent.MouseButtonPress:
-			point = (event.pos().x()/self.zoom, event.pos().y()/self.zoom)
-
 			self.lastMousePos = point
 
+			return True
+		if hasattr(self, 'mousePress') and event.type() == QtCore.QEvent.MouseButtonPress:
+			point = (int(event.pos().x()/self.zoom), int(event.pos().y()/self.zoom))
+
 			self.mousePress(point)
+
+			self.lastMousePos = point
 
 			return True
 
