@@ -17,7 +17,7 @@ szInt = np.dtype(np.int32).itemsize
 class GrowCut():
 	lw = LWORKGROUP
 
-	def __init__(self, context, devices, img, imgW=None, imgH=None):
+	def __init__(self, context, devices, img, shape=None):
 		self.context = context
 
 		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
@@ -25,30 +25,24 @@ class GrowCut():
 
 		self.kernEvolve = cl.Kernel(program, 'evolve')
 
-		if type(img) == np.ndarray:
-			imgW = img.size[0]
-			imgH = img.size[1]
-			shapeNP = (img.size[1], img.size[0])
-
-			hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, self.lw), 'edge')
-
-			shapeCL = (hImg.shape[1], hImg.shape[0])
-			shapeNP = hImg.shape
-
-			self.dImg = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=hImg)
-		else:
-			if imgW == None or imgH == None:
+		if type(img) == cl.GLBuffer:
+			if shape == None:
 				raise ValueError("CL Buffer width or height not provided")
 
-			shapeCL = (imgW, imgH)
-			shapeNP = (imgH, imgW)
+			shapeCL = (shape[1], shape[0])
 
 			self.dImg = img
+		elif type(img) == np.ndarraye:
+			raise NotImplementedError("NP arrays not implemented")
+		elif type(img) == cl.GLTexture:
+			raise NotImplementedError("GL textures not implemented")
+		elif type(img) == cl.Image:
+			raise NotImplementedError("CL image not implemented")
 
-		self.hLabelsIn = np.zeros(shapeNP, np.int32)
-		self.hLabelsOut = np.empty(shapeNP, np.int32)
-		self.hStrengthIn = np.zeros(shapeNP, np.float32)
-		self.hStrengthOut = np.empty(shapeNP, np.float32)
+		self.hLabelsIn = np.zeros(shape, np.int32)
+		self.hLabelsOut = np.empty(shape, np.int32)
+		self.hStrengthIn = np.zeros(shape, np.float32)
+		self.hStrengthOut = np.empty(shape, np.float32)
 		self.hHasConverged = np.empty((1,), np.int32)
 
 		self.hHasConverged[0] = False
@@ -69,8 +63,8 @@ class GrowCut():
 			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
 			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
 			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
-			np.int32(imgW),
-			np.int32(imgH)
+			np.int32(shape[1]),
+			np.int32(shape[0])
 		]
 
 		self.gWorksize = roundUp(shapeCL, self.lw)
@@ -101,35 +95,50 @@ if __name__ == "__main__":
 	from PyQt4 import QtCore, QtGui, QtOpenGL
 	from GLWindow import GLWindow
 	from Colorize import Colorize
+	from Brush import Brush
 
 	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
 	if img.mode != 'RGBA':
 		img = img.convert('RGBA')
 
 	app = QtGui.QApplication(sys.argv)
-	window = GLWindow((img.size[1], img.size[0]))
-	context = window.context
-	devices = context.get_info(cl.context_info.DEVICES)
-	queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
+	window = GLWindow(img.size)
+	clContext = window.clContext
+	glContext = window.glContext
+	devices = clContext.get_info(cl.context_info.DEVICES)
+	queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-	colorize = Colorize(context, devices)
+	colorize = Colorize(clContext, devices)
 
 	shapeNP = (img.size[1], img.size[0])
 	shapeNP = roundUp(shapeNP, GrowCut.lw)
 	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-	vLabels = window.addView(hImg.shape, 'Labels')
-	vImg = window.addViewNp(hImg, 'Image')
-
-	growCut = GrowCut(context, devices, vImg, shapeNP[1], shapeNP[0])
-
 	reversedHue = (240, 0)
 	def mapLabels():
 		m = 0
-		M = 2
+		M = 3
 		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), hue=reversedHue, dOut=vLabels, typeIn=np.int32)
 
-	window.setMap(vLabels, mapLabels)
+	vLabels = window.addView(shapeNP, 'labels', mapLabels)
+	vImg = window.addViewNp(hImg, 'Image', buffer=True)
+
+	window.setMap("labels", mapLabels)
+
+	brushArgs = [
+		#'__write_only image2d_t canvas',
+		'__global int* labels_in',
+		'__global float* strength_in',
+		'int label',
+		'int canvasW'
+	]
+	#brushCode = 'write_imagef(canvas, gcoord, rgba2f4(color)/255.0f);\n'
+	brushCode = 'labels_in[gcoord.y*canvasW + gcoord.x] = label;\n'
+	brushCode += 'strength_in[gcoord.y*canvasW + gcoord.x] = 1;\n'
+
+	brush = Brush(clContext, devices, brushArgs, brushCode)
+
+	growCut = GrowCut(clContext, devices, vImg, shapeNP)
 
 	label = 1
 
@@ -142,15 +151,31 @@ if __name__ == "__main__":
 		growCut.evolve(queue)
 		window.updateCanvas()
 
+	iteration = 0
+	refresh = 50
+
+	def mouseDrag(pos1, pos2):
+		global iteration
+
+		if pos1 == pos2:
+			return
+
+		brush.draw_gpu(queue, [growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
+
+		if iteration % refresh == 0:
+			window.updateCanvas()
+
+		iteration += 1
+
 	def mousePress(pos):
-		cl.enqueue_copy(queue, growCut.hLabelsIn, growCut.dLabelsIn).wait()
-		cl.enqueue_copy(queue, growCut.hStrengthIn, growCut.dStrengthIn).wait()
+		global iteration
 
-		growCut.hLabelsIn[pos[1], pos[0]] = label
-		growCut.hStrengthIn[pos[1], pos[0]] = 1
+		brush.draw_gpu(queue, [growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos)
 
-		cl.enqueue_copy(queue, growCut.dLabelsIn, growCut.hLabelsIn).wait()
-		cl.enqueue_copy(queue, growCut.dStrengthIn, growCut.hStrengthIn).wait()
+		if iteration % refresh == 0:
+			window.updateCanvas()
+
+		iteration += 1
 
 	def keyPress(key):
 		global label
@@ -165,6 +190,7 @@ if __name__ == "__main__":
 
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.setMousePress(mousePress)
+	window.setMouseDrag(mouseDrag)
 	window.setKeyPress(keyPress)
 
 	window.show()

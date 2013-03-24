@@ -10,13 +10,10 @@ from pyopencl.tools import get_gl_sharing_context_properties
 from Colorize import Colorize
 import numpy as np
 
-
-
 try:
 	from OpenGL.GL import *
 except ImportError:
-	app = QtGui.QApplication(sys.argv)
-	QtGui.QMessageBox.critical(None, "Application Error", "error importing PyOpenGL")
+	raise ImportError("Error importing PyOpenGL")
 
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 480
@@ -38,13 +35,10 @@ class GLWindow(QtGui.QMainWindow):
 			else:
 				QtGui.QScrollArea.eventFilter(self, object, event)
 
-			return False
+			return True
 
-	def __init__(self, shape=(DEFAULT_HEIGHT, DEFAULT_WIDTH)):
+	def __init__(self, shape=(DEFAULT_WIDTH, DEFAULT_HEIGHT)):
 		super(GLWindow, self).__init__(None)
-
-		width = shape[1]
-		height = shape[0]
 
 		self.slider = QtGui.QSlider(QtCore.Qt.Horizontal)
 		self.slider.setRange(0, 100)
@@ -62,10 +56,11 @@ class GLWindow(QtGui.QMainWindow):
 		self.layerList.itemClicked.connect(self.sigLayerClicked)
 		self.layerList.itemChanged.connect(self.sigCurrentLayerChanged)
 
-		self.canvas = GLCanvas(width, height)
+		self.canvas = GLCanvas(shape)
 		self.canvas.layers = self.layers
 
-		self.scrollarea = self.CenteredScrollArea()
+		self.scrollarea = QtGui.QScrollArea()
+		#self.scrollarea = self.CenteredScrollArea()
 		self.scrollarea.setWidget(self.canvas)
 		self.scrollarea.setAlignment(QtCore.Qt.AlignCenter)
 
@@ -81,7 +76,7 @@ class GLWindow(QtGui.QMainWindow):
 		self.sliderZoom.valueChanged.connect(self.sigZoom)
 		self.sliderZoom.setValue(100)
 
-		layout = QtGui.QGridLayout(self)
+		layout = QtGui.QGridLayout()
 		layout.addWidget(self.slider)
 		layout.addWidget(self.layerList)
 		layout.addWidget(self.widgetButtons)
@@ -93,15 +88,19 @@ class GLWindow(QtGui.QMainWindow):
 		splitter = QtGui.QSplitter()
 		splitter.addWidget(side)
 		splitter.addWidget(self.scrollarea)
+		splitter.setSizes([100, shape[0] + 25])
 
 		self.setCentralWidget(splitter)
 
 		self.initGL()
 		self.initCL()
 
-		self.colorize = Colorize(self.context, self.context.devices)
+		self.colorize = Colorize(self.clContext, self.clContext.devices)
 
 		self.installEventFilter(self)
+		self.canvas.installEventFilter(self)
+
+		self.resize(100 + shape[0] + 24, shape[1] + 10)
 
 	def addButton(self, name, action):
 		btn = QtGui.QPushButton(name)
@@ -111,58 +110,27 @@ class GLWindow(QtGui.QMainWindow):
 
 	def initGL(self):
 		self.glContext = self.canvas.context()
-		self.glContext.makeCurrent()
 
-		glClearColor(0.0, 0.0, 0.0, 0.0)
+	def addViewNp(self, arr, name=None, buffer=False):
+		view = self.addView(arr.shape, name, buffer)
 
-		glFinish()
+		if buffer:
+			cl.enqueue_copy(self.queue, view, arr).wait()
+		else:
+			cl.enqueue_copy(self.queue, view, arr, origin=(0, 0), region=(arr.shape[1], arr.shape[0])).wait()
 
-	def addViewNp(self, arr, name=None):
-		out = self.addView(arr.shape, name)
+		return view
 
-		cl.enqueue_copy(self.queue, out, arr).wait()
+	def setMap(self, name, func):
+		item = self.layerList.findItems(name, QtCore.Qt.MatchExactly)[0]
 
-		return out
+		item.map = func
 
-	def setMap(self, view, func):
-		layer = self.getLayer(view)
-
-		layer.map = func
-
-	def getLayer(self, dBuf):
-		for layer in self.layers:
-			if dBuf == layer.dBuf:
-				return layer
-
-		return None
-
-	def addView(self, shape, name=None):
-		width = shape[1]
-		height = shape[0]
-
-		pbo = glGenBuffers(1)
-		tex = glGenTextures(1)
-
-		#glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo)
-		glBufferData(GL_PIXEL_UNPACK_BUFFER, szInt*width*height, None, GL_STATIC_DRAW)
-
-		glBindTexture(GL_TEXTURE_2D, tex)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
-
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-
-		glFinish()
-
-		view = cl.GLBuffer(self.context, cl.mem_flags.READ_ONLY, int(pbo))
-
+	def addView(self, shape, name=None, buffer=False):
 		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])
+		view = GLCanvas.View(shape, pos, pbo=buffer)
 
-		layer = GLCanvas.View(pbo, tex, view, shape, pos)
-		self.layers.append(layer)
+		self.layers.append(view)
 
 		item = QtGui.QListWidgetItem(name)
 		item.setText(name)
@@ -170,35 +138,39 @@ class GLWindow(QtGui.QMainWindow):
 						QtCore.Qt.ItemIsDragEnabled |
 						QtCore.Qt.ItemIsSelectable |
 						QtCore.Qt.ItemIsEnabled)
-		item.setCheckState(QtCore.Qt.Unchecked)
-		item.setData(QtCore.Qt.UserRole, layer)
+		item.setCheckState(QtCore.Qt.Checked)
+		item.view = view
+		item.map = None
 
 		self.layerList.addItem(item)
 
-		return view
+		if buffer:
+			return cl.GLBuffer(self.clContext, cl.mem_flags.READ_ONLY, int(view.pbo))
+		else:
+			return cl.GLTexture(self.clContext, cl.mem_flags.WRITE_ONLY, GL_TEXTURE_2D, 0, view.tex, 2)
 
 	def initCL(self):
 		platforms = cl.get_platforms()
 
 		if sys.platform == "darwin":
-			self.context = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
+			self.clContext = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
 		else:
 			try:
 				properties = [(cl.context_properties.PLATFORM, platforms)] + get_gl_sharing_context_properties()
-				self.context = cl.Context(properties)
+				self.clContext = cl.Context(properties)
 			except:
 				raise SystemError('Could not create OpenCL context')
 
-		self.queue = cl.CommandQueue(self.context)
+		self.queue = cl.CommandQueue(self.clContext)
 
 	def sigCurrentLayerChanged(self, item):
-		layer = item.data(QtCore.Qt.UserRole).toPyObject()
+		layer = item.view
 
 	def sigLayerOpacity(self, value):
 		if self.layerList.currentItem() == None:
 			return
 
-		item = self.layerList.currentItem().data(QtCore.Qt.UserRole).toPyObject()
+		item = self.layerList.currentItem().view
 		item.opacity = float(value)/100
 
 		self.updateCanvas()
@@ -208,7 +180,7 @@ class GLWindow(QtGui.QMainWindow):
 
 	def sigLayerClicked(self, item):
 		checked = item.checkState() == QtCore.Qt.Unchecked
-		layer = item.data(QtCore.Qt.UserRole).toPyObject()
+		layer = item.view
 
 		if layer.enabled == checked:
 			layer.enabled = not layer.enabled
@@ -219,19 +191,12 @@ class GLWindow(QtGui.QMainWindow):
 	def sigLayerIndexesMoved(self):
 		del self.layers[:]
 		for i in range(self.layerList.count()):
-			layer = self.layerList.item(i).data(QtCore.Qt.UserRole).toPyObject()
+			layer = self.layerList.item(i).view
 			self.layers.append(layer)
 
 		self.updateCanvas()
 
 	def updateCanvas(self):
-		for layer in self.layers:
-			if not layer.enabled or layer.opacity == 0 or layer.map == None:
-				continue
-
-			layer.map()
-
-		self.queue.finish()
 		self.canvas.repaint()
 
 	def setCursor(self, cursor):
@@ -247,13 +212,26 @@ class GLWindow(QtGui.QMainWindow):
 	def setMousePress(self, func):
 		self.canvas.mousePress = func
 
+	def setMouseDrag(self, func):
+		self.canvas.mouseDrag = func
+
 	def setKeyPress(self, func):
 		self.keyPress = func
 
 	def eventFilter(self, object, event):
-		if hasattr(self, 'keyPress') and event.type() == QtCore.QEvent.KeyPress:
-			self.keyPress(event.key())
+		if object == self:
+			if hasattr(self, 'keyPress') and event.type() == QtCore.QEvent.KeyPress:
+				self.keyPress(event.key())
 
-			return True
+				return True
+
+		elif object == self.canvas and event.type() == QtCore.QEvent.Paint:
+			for i in range(self.layerList.count()):
+				layer = self.layerList.item(i)
+
+				if layer.map:
+					layer.map()
+
+			self.canvas.repaint()
 
 		return False

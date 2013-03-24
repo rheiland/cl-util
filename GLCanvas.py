@@ -11,7 +11,7 @@ except ImportError:
 	app = QtGui.QApplication(sys.argv)
 	QtGui.QMessageBox.critical(None, "Application Error", "error importing PyOpenGL")
 	sys.exit(1)
-from OpenGL.raw.GoL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
+from OpenGL.raw.GL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
 
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
@@ -22,14 +22,14 @@ class GLCanvas(QtOpenGL.QGLWidget):
 			self.opacity = opacity
 			self.shape = shape
 			self.enabled = enabled
-			self.map = map
+			self.map = None
 			self.pos = pos
 			self.pbo = False
 
 			if pbo:
 				self.pbo = glGenBuffers(1)
 				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self.pbo)
-				glBufferData(GL_PIXEL_UNPACK_BUFFER, szInt*width*height, None, GL_STATIC_DRAW)
+				glBufferData(GL_PIXEL_UNPACK_BUFFER, szInt*shape[1]*shape[0], None, GL_STATIC_DRAW)
 
 			self.tex = glGenTextures(1)
 
@@ -43,7 +43,7 @@ class GLCanvas(QtOpenGL.QGLWidget):
 
 			glFinish()
 
-	def __init__(self, width, height, parent=None):
+	def __init__(self, shape, parent=None):
 		super(GLCanvas, self).__init__(parent)
 
 		self.w = 0
@@ -51,16 +51,15 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.pbo = None
 		self.tex = None
 
-		self.width = width
-		self.height = height
+		self.width = shape[0]
+		self.height = shape[1]
 
 		self.zoom = 1.0
 		self.transX = 0
 		self.transY = 1
 		self.flag = 0
 
-		self.viewW = width
-		self.viewH = height
+		self.viewport = None
 
 		self.resize(self.zoom*self.width, self.zoom*self.height)
 
@@ -80,7 +79,9 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		return QtCore.QSize(self.zoom*self.width, self.zoom*self.height)
 
 	def initializeGL(self):
-		pass
+		self.makeCurrent()
+
+		glClearColor(0.0, 0.0, 0.0, 0.0)
 
 	def paintEvent(self, event):
 		r = event.rect()
@@ -88,8 +89,7 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.transX = -r.x()
 		self.transY = -(self.zoom*self.height - r.height()) + r.y()
 
-		self.viewW = r.width()
-		self.viewH = r.height()
+		self.viewport = (r.width(), r.height())
 
 		self.makeCurrent()
 
@@ -101,10 +101,10 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		glFlush()
 
 	def paintGL(self):
-		glViewport(0, 0, self.viewW, self.viewH)
+		glViewport(0, 0, self.viewport[0], self.viewport[1])
 		glMatrixMode(GL_PROJECTION)
 		glLoadIdentity()
-		glOrtho(0, self.viewW, 0, self.viewH, -1, 1)
+		glOrtho(0, self.viewport[0], 0, self.viewport[1], -1, 1)
 		glTranslatef(self.transX, self.transY, 0)
 		glScalef(self.zoom, self.zoom, 1)
 		glMatrixMode(GL_MODELVIEW)
@@ -135,7 +135,7 @@ class GLCanvas(QtOpenGL.QGLWidget):
 			if layer.pbo:
 				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, layer.pbo)
 				glBindTexture(GL_TEXTURE_2D, layer.tex)
-				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[0], layer.shape[1], GL_RGBA, GL_UNSIGNED_BYTE, None)
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[1], layer.shape[0], GL_RGBA, GL_UNSIGNED_BYTE, None)
 			else:
 				glBindTexture(GL_TEXTURE_2D, layer.tex)
 
@@ -154,11 +154,6 @@ class GLCanvas(QtOpenGL.QGLWidget):
 				glPopMatrix()
 
 		glDisable(GL_BLEND)
-
-	def resizeGL(self, width, height):
-		self.initializeGL()
-
-		self.paintGL()
 
 	def eventFilter(self, object, event):
 		if hasattr(self, 'mouseDrag') and \
