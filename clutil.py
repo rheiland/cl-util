@@ -72,7 +72,7 @@ def platformInfo():
 		print platform
 
 		for device in platform.get_devices():
-			print deviceInfo(device)
+			print cl.deviceInfo(device)
 
 #
 #  Create an OpenCL program from the kernel source file

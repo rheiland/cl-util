@@ -111,8 +111,8 @@ class GLWindow(QtGui.QMainWindow):
 	def initGL(self):
 		self.glContext = self.canvas.context()
 
-	def addViewNp(self, arr, name=None, buffer=False):
-		view = self.addView(arr.shape, name, buffer)
+	def addViewNp(self, arr, name=None, mem_flags=cm.READ_ONLY, buffer=False):
+		view = self.addView(arr.shape, name, mem_flags, buffer)
 
 		if buffer:
 			cl.enqueue_copy(self.queue, view, arr).wait()
@@ -121,12 +121,17 @@ class GLWindow(QtGui.QMainWindow):
 
 		return view
 
-	def setMap(self, name, func):
+	def setLayerMap(self, name, func):
 		item = self.layerList.findItems(name, QtCore.Qt.MatchExactly)[0]
 
 		item.map = func
 
-	def addView(self, shape, name=None, buffer=False):
+	def setLayerOpacity(self, name, opacity):
+		item = self.layerList.findItems(name, QtCore.Qt.MatchExactly)[0]
+
+		item.opacity = opacity
+
+	def addView(self, shape, name=None, mem_flags=cm.READ_ONLY, buffer=False):
 		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])
 		view = GLCanvas.View(shape, pos, pbo=buffer)
 
@@ -145,9 +150,9 @@ class GLWindow(QtGui.QMainWindow):
 		self.layerList.addItem(item)
 
 		if buffer:
-			return cl.GLBuffer(self.clContext, cl.mem_flags.READ_ONLY, int(view.pbo))
+			return cl.GLBuffer(self.clContext, mem_flags, int(view.pbo))
 		else:
-			return cl.GLTexture(self.clContext, cl.mem_flags.WRITE_ONLY, GL_TEXTURE_2D, 0, view.tex, 2)
+			return cl.GLTexture(self.clContext, mem_flags, GL_TEXTURE_2D, 0, int(view.tex), 2)
 
 	def initCL(self):
 		platforms = cl.get_platforms()

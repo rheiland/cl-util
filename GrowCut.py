@@ -17,7 +17,7 @@ szInt = np.dtype(np.int32).itemsize
 class GrowCut():
 	lw = LWORKGROUP
 
-	def __init__(self, context, devices, img, shape=None):
+	def __init__(self, context, devices, img):
 		self.context = context
 
 		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
@@ -26,23 +26,25 @@ class GrowCut():
 		self.kernEvolve = cl.Kernel(program, 'evolve')
 
 		if type(img) == cl.GLBuffer:
-			if shape == None:
-				raise ValueError("CL Buffer width or height not provided")
-
-			shapeCL = (shape[1], shape[0])
-
-			self.dImg = img
-		elif type(img) == np.ndarraye:
+				raise ValueError("CL Buffer not implemented")
+		elif type(img) == np.ndarray:
 			raise NotImplementedError("NP arrays not implemented")
 		elif type(img) == cl.GLTexture:
-			raise NotImplementedError("GL textures not implemented")
+			self.dImg = img
+
+			width = img.get_image_info(cl.image_info.WIDTH)
+			height = img.get_image_info(cl.image_info.HEIGHT)
+
+			shapeNP = (height, width)
+			shapeCL = (width, height)
+
 		elif type(img) == cl.Image:
 			raise NotImplementedError("CL image not implemented")
 
-		self.hLabelsIn = np.zeros(shape, np.int32)
-		self.hLabelsOut = np.empty(shape, np.int32)
-		self.hStrengthIn = np.zeros(shape, np.float32)
-		self.hStrengthOut = np.empty(shape, np.float32)
+		self.hLabelsIn = np.zeros(shapeNP,np.int32)
+		self.hLabelsOut = np.empty(shapeNP, np.int32)
+		self.hStrengthIn = np.zeros(shapeNP, np.float32)
+		self.hStrengthOut = np.empty(shapeNP, np.float32)
 		self.hHasConverged = np.empty((1,), np.int32)
 
 		self.hHasConverged[0] = False
@@ -58,13 +60,12 @@ class GrowCut():
 			self.dLabelsOut,
 			self.dStrengthIn,
 			self.dStrengthOut,
-			self.dImg,
 			self.dHasConverged,
-			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
-			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
-			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
-			np.int32(shape[1]),
-			np.int32(shape[0])
+			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			self.dImg,
+			cl.Sampler(clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
 		]
 
 		self.gWorksize = roundUp(shapeCL, self.lw)
@@ -114,31 +115,35 @@ if __name__ == "__main__":
 	shapeNP = roundUp(shapeNP, GrowCut.lw)
 	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-	reversedHue = (240, 0)
 	def mapLabels():
 		m = 0
-		M = 3
-		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), hue=reversedHue, dOut=vLabels, typeIn=np.int32)
+		M = 8
+		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), dOut=vLabels, typeIn=np.int32)
 
-	vLabels = window.addView(shapeNP, 'labels', mapLabels)
-	vImg = window.addViewNp(hImg, 'Image', buffer=True)
+	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
+	vLabels = window.addView(shapeNP, 'labels', cm.READ_WRITE, True)
+	vImg = window.addViewNp(hImg, 'Image', cl.mem_flags.READ_ONLY)
 
-	window.setMap("labels", mapLabels)
+	window.setLayerMap('labels', mapLabels)
+	window.setLayerOpacity('labels', 0.7)
+	window.setLayerOpacity('strokes', 1.0)
 
 	brushArgs = [
-		#'__write_only image2d_t canvas',
+#		'__write_only image2d_t strokes',
+		'__global uint* strokes',
 		'__global int* labels_in',
 		'__global float* strength_in',
 		'int label',
 		'int canvasW'
 	]
-	#brushCode = 'write_imagef(canvas, gcoord, rgba2f4(color)/255.0f);\n'
-	brushCode = 'labels_in[gcoord.y*canvasW + gcoord.x] = label;\n'
+#	brushCode = 'write_imagef(strokes, gcoord, rgba2f4(label)/255.0f);\n'
+	brushCode = 'strokes[gcoord.y*canvasW + gcoord.x] = 0xFF000000 | 50*label;\n'
 	brushCode += 'strength_in[gcoord.y*canvasW + gcoord.x] = 1;\n'
+	brushCode += 'labels_in[gcoord.y*canvasW + gcoord.x] = label;\n'
 
 	brush = Brush(clContext, devices, brushArgs, brushCode)
 
-	growCut = GrowCut(clContext, devices, vImg, shapeNP)
+	growCut = GrowCut(clContext, devices, vImg)
 
 	label = 1
 
@@ -160,7 +165,7 @@ if __name__ == "__main__":
 		if pos1 == pos2:
 			return
 
-		brush.draw_gpu(queue, [growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
+		brush.draw_gpu(queue, [vStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
 
 		if iteration % refresh == 0:
 			window.updateCanvas()
@@ -170,7 +175,7 @@ if __name__ == "__main__":
 	def mousePress(pos):
 		global iteration
 
-		brush.draw_gpu(queue, [growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos)
+		brush.draw_gpu(queue, [vStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos)
 
 		if iteration % refresh == 0:
 			window.updateCanvas()
@@ -184,6 +189,11 @@ if __name__ == "__main__":
 		elif key == QtCore.Qt.Key_1: label = 1
 		elif key == QtCore.Qt.Key_2: label = 2
 		elif key == QtCore.Qt.Key_3: label = 3
+		elif key == QtCore.Qt.Key_4: label = 4
+		elif key == QtCore.Qt.Key_5: label = 5
+		elif key == QtCore.Qt.Key_6: label = 6
+		elif key == QtCore.Qt.Key_7: label = 7
+		elif key == QtCore.Qt.Key_8: label = 8
 
 	timer = QtCore.QTimer()
 	timer.timeout.connect(next)
