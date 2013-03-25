@@ -3,7 +3,7 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os
-from clutil import roundUp, padArray2D, createProgram, isPow2
+from clutil import roundUp, padArray2D, createProgram
 
 NEIGHBOURHOOD_VON_NEUMANN = 0
 NEIGHBOURHOOD_MOORE = 0
