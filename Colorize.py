@@ -1,13 +1,12 @@
 import os
 import numpy as np
 import pyopencl as cl
-import msclib.clutil as clutil
-import sys
+from clutil import roundUp, createProgram
 
 class Colorize:
 	def __init__(self, context, devices):
 		filename = os.path.join(os.path.dirname(__file__), 'colorize.cl')
-		program = clutil.createProgram(context, devices, [], filename)
+		program = createProgram(context, devices, [], filename)
 		self.context = context
 		self.kernColorizef = cl.Kernel(program, 'colorizef')
 		self.kernColorizef_sat = cl.Kernel(program, 'colorizef_sat')
@@ -44,9 +43,7 @@ class Colorize:
 			dOut = dIn
 
 		lWorksize = (256, )
-		gWorksize = clutil.roundUp((size, ), lWorksize)
-
-
+		gWorksize = roundUp((size, ), lWorksize)
 
 		if typeIn == np.float32:
 			if type(hue) == int or type(hue) == float:
