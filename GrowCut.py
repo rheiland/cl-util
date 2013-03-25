@@ -6,7 +6,7 @@ import os
 from clutil import roundUp, padArray2D, createProgram, isPow2
 
 NEIGHBOURHOOD_VON_NEUMANN = 0
-NEIGHBOURHOOD_MOORE = 1
+NEIGHBOURHOOD_MOORE = 0
 
 LWORKGROUP = (16, 16)
 
@@ -17,11 +17,15 @@ szInt = np.dtype(np.int32).itemsize
 class GrowCut():
 	lw = LWORKGROUP
 
-	def __init__(self, context, devices, img):
+	def __init__(self, context, devices, img, neighbourhood=NEIGHBOURHOOD_VON_NEUMANN):
 		self.context = context
 
+		options = [
+			'-D NEIGHBOURHOOD='+str(neighbourhood)
+		]
+
 		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
-		program = createProgram(context, devices, [], filename)
+		program = createProgram(context, devices, options, filename)
 
 		self.kernEvolve = cl.Kernel(program, 'evolve')
 
@@ -61,9 +65,9 @@ class GrowCut():
 			self.dStrengthIn,
 			self.dStrengthOut,
 			self.dHasConverged,
-			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
-			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
-			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
 			self.dImg,
 			cl.Sampler(clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
 		]
@@ -120,11 +124,19 @@ if __name__ == "__main__":
 		M = 8
 		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), dOut=vLabels, typeIn=np.int32)
 
+	def mapStrength():
+		m = 0
+		M = 2
+		colorize.colorize(queue, growCut.dStrengthIn, val=(m, M), dOut=vStrength)
+
+
 	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
+	vStrength = window.addView(shapeNP, 'strength', cm.WRITE_ONLY, True)
 	vLabels = window.addView(shapeNP, 'labels', cm.READ_WRITE, True)
 	vImg = window.addViewNp(hImg, 'Image', cl.mem_flags.READ_ONLY)
 
 	window.setLayerMap('labels', mapLabels)
+	window.setLayerMap('strength', mapStrength)
 	window.setLayerOpacity('labels', 0.7)
 	window.setLayerOpacity('strokes', 1.0)
 
@@ -157,7 +169,7 @@ if __name__ == "__main__":
 		window.updateCanvas()
 
 	iteration = 0
-	refresh = 50
+	refresh = 1
 
 	def mouseDrag(pos1, pos2):
 		global iteration
