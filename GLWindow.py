@@ -129,7 +129,9 @@ class GLWindow(QtGui.QMainWindow):
 	def setLayerOpacity(self, name, opacity):
 		item = self.layerList.findItems(name, QtCore.Qt.MatchExactly)[0]
 
-		item.opacity = opacity
+		item.view.opacity = opacity
+
+		self.updateCanvas()
 
 	def addView(self, shape, name=None, mem_flags=cm.READ_ONLY, buffer=False):
 		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])

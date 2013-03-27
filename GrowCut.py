@@ -65,9 +65,10 @@ class GrowCut():
 			self.dStrengthIn,
 			self.dStrengthOut,
 			self.dHasConverged,
+			cl.LocalMemory(szInt*(self.lw[0]+4)*(self.lw[1]+4)),
+			cl.LocalMemory(szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
 			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
-			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
-			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
+			cl.LocalMemory(szInt*(self.lw[0]+4)*(self.lw[1]+4)),
 			self.dImg,
 			cl.Sampler(clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
 		]
@@ -80,7 +81,12 @@ class GrowCut():
 		self.args[2] = self.dStrengthIn
 		self.args[3] = self.dStrengthOut
 
-		self.kernEvolve(queue, self.gWorksize, self.lw, *self.args).wait()
+		elapsed = 0;
+		event = self.kernEvolve(queue, self.gWorksize, self.lw, *self.args)
+		event.wait()
+		elapsed += event.profile.end - event.profile.start
+
+		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
 
 		cl.enqueue_copy(queue, self.hLabelsOut, self.dLabelsOut).wait()
 		cl.enqueue_copy(queue, self.hStrengthOut, self.dStrengthOut).wait()
@@ -121,14 +127,13 @@ if __name__ == "__main__":
 
 	def mapLabels():
 		m = 0
-		M = 8
+		M = 10
 		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), dOut=vLabels, typeIn=np.int32)
 
 	def mapStrength():
 		m = 0
 		M = 2
 		colorize.colorize(queue, growCut.dStrengthIn, val=(m, M), dOut=vStrength)
-
 
 	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
 	vStrength = window.addView(shapeNP, 'strength', cm.WRITE_ONLY, True)
@@ -137,6 +142,8 @@ if __name__ == "__main__":
 
 	window.setLayerMap('labels', mapLabels)
 	window.setLayerMap('strength', mapStrength)
+	window.setLayerOpacity('strokes', 0.0)
+	window.setLayerOpacity('strength', 0.0)
 	window.setLayerOpacity('labels', 0.7)
 	window.setLayerOpacity('strokes', 1.0)
 
@@ -169,7 +176,7 @@ if __name__ == "__main__":
 		window.updateCanvas()
 
 	iteration = 0
-	refresh = 1
+	refresh = 50
 
 	def mouseDrag(pos1, pos2):
 		global iteration
@@ -211,6 +218,7 @@ if __name__ == "__main__":
 	timer.timeout.connect(next)
 
 	window.addButton("start", functools.partial(timer.start, 0))
+	window.addButton('next', next)
 	window.setMousePress(mousePress)
 	window.setMouseDrag(mouseDrag)
 	window.setKeyPress(keyPress)
