@@ -48,7 +48,7 @@ class GrowCut():
 		self.hLabelsIn = np.zeros(shapeNP,np.int32)
 		self.hLabelsOut = np.empty(shapeNP, np.int32)
 		self.hStrengthIn = np.zeros(shapeNP, np.float32)
-		self.hStrengthOut = np.empty(shapeNP, np.float32)
+		self.hStrengthOut = np.zeros(shapeNP, np.float32)
 		self.hHasConverged = np.empty((1,), np.int32)
 
 		self.hHasConverged[0] = False
