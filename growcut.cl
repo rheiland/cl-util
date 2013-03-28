@@ -92,8 +92,7 @@ __kernel void evolve(
 	int sw = lw + 2;
 	int sxy = sy*sw + sx;
 
-	//int imgW = get_image_width(img);
-	int imgW = 800;
+	int imgW = get_image_width(img);
 
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];
@@ -285,9 +284,6 @@ __kernel void evolve(
 }
 
 
-
-
-
 __kernel void evolveVonNeumann(
 	__global int* labels_in,
 	__global int* labels_out,
@@ -319,8 +315,7 @@ __kernel void evolveVonNeumann(
 	int sw = lw + 2;
 	int sxy = sy*sw + sx;
 
-	//int imgW = get_image_width(img);
-	int imgW = 800;
+	int imgW = get_image_width(img);
 
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];

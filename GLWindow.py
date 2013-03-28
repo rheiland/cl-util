@@ -58,6 +58,8 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.canvas = GLCanvas(shape)
 		self.canvas.layers = self.layers
+		self.canvas.mousePress = self.mousePress
+		self.canvas.mouseDrag = self.mouseDrag
 
 		self.scrollarea = QtGui.QScrollArea()
 		#self.scrollarea = self.CenteredScrollArea()
@@ -217,18 +219,26 @@ class GLWindow(QtGui.QMainWindow):
 		self.canvas.setZoom(float(zoom)/100)
 
 	def setMousePress(self, func):
-		self.canvas.mousePress = func
+		self.userMousePress = func
 
 	def setMouseDrag(self, func):
-		self.canvas.mouseDrag = func
+		self.userMouseDrag = func
 
 	def setKeyPress(self, func):
-		self.keyPress = func
+		self.userKeyPress = func
+
+	def mousePress(self, pos):
+		if hasattr(self, 'userMousePress'):
+			self.userMousePress(pos)
+
+	def mouseDrag(self, pos1, pos2):
+		if hasattr(self, 'userMouseDrag'):
+			self.userMouseDrag(pos1, pos2)
 
 	def eventFilter(self, object, event):
 		if object == self:
-			if hasattr(self, 'keyPress') and event.type() == QtCore.QEvent.KeyPress:
-				self.keyPress(event.key())
+			if hasattr(self, 'userKeyPress') and event.type() == QtCore.QEvent.KeyPress:
+				self.userKeyPress(event.key())
 
 				return True
 
@@ -239,6 +249,6 @@ class GLWindow(QtGui.QMainWindow):
 				if layer.map:
 					layer.map()
 
-			self.canvas.repaint()
+			return False
 
 		return False
