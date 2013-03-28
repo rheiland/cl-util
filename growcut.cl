@@ -22,18 +22,56 @@
 #define rgba_f2_to_uint(c) (uint) (0xFF << 24 | ((int) (255*c.z)) << 16 | ((int) (255*c.y)) << 8 | (int) (255*c.x))
 
 #define CAN_ATTACK_THRESHOLD 6
-#define OVER_PROWER_THRESHOLD 1
+#define OVER_PROWER_THRESHOLD 6
+
+__kernel void countEnemies(
+	__global int* labels,
+	__local int* s_labels,
+	__global int* g_enemies
+){
+	int gx = get_global_id(0);
+	int gy = get_global_id(1);
+	int gw = get_global_size(0);
+	int gh = get_global_size(1);
+	int gxy = gy*gw + gx;
+	
+	int lx = get_local_id(0);
+	int ly = get_local_id(1);
+	int lw = get_local_size(0);
+	int lh = get_local_size(1);
+
+	int sx = 1 + lx;
+	int sy = 1 + ly;
+	int sw = lw + 2;
+	int sxy = sy*sw + sx;
+
+	s_labels[sxy] = labels[gxy];
+
+	if (ly == 0)    s_labels[sxy-sw] = (gy != 0)    ? labels[gxy-gw] : -1;
+	if (ly == lh-1) s_labels[sxy+sw] = (gy != gh-1) ? labels[gxy+gw] : -1;
+	if (lx == 0)    s_labels[sxy-1]  = (gx != 0)    ? labels[gxy-1]  : -1;
+	if (lx == lw-1) s_labels[sxy+1]  = (gx != gw-1) ? labels[gxy+1]  : -1;
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	int label = s_labels[sxy];
+	int4 neighbours = (int4) (s_labels[sxy-sw], s_labels[sxy+sw], s_labels[sxy-1], s_labels[sxy+1]);	
+	int4 enemies = neighbours != label;
+
+	g_enemies[gxy] = CL_TRUE_2_TRUE*(enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3);
+}
 
 __kernel void evolve(
 	__global int* labels_in,
 	__global int* labels_out,
 	__global float* strength_in,
 	__global float* strength_out,
+	__global int* g_enemies,
 	__global int* has_converge,
 	__local int* s_labels_in,
 	__local float* s_strength_in,
 	__local float4* s_img,
-	__local int* s_canAttack,
+	__local int* s_enemies,
 	__read_only image2d_t img,
 	sampler_t sampler
 )
@@ -49,9 +87,9 @@ __kernel void evolve(
 	int lw = get_local_size(0);
 	int lh = get_local_size(1);
 
-	int sx = 2 + lx;
-	int sy = 2 + ly;
-	int sw = lw + 4;
+	int sx = 1 + lx;
+	int sy = 1 + ly;
+	int sw = lw + 2;
 	int sxy = sy*sw + sx;
 
 	//int imgW = get_image_width(img);
@@ -60,199 +98,80 @@ __kernel void evolve(
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];
 	s_img[sxy]         = read_imagef(img, sampler, (int2) (gx, gy));
-	//s_canAttack[sxy]   = FALSE;
+	s_enemies[sxy]     = g_enemies[gxy];
 
 	int isxy, igxy;
 
 	//load padding
-	if (ly < 2) { //top
-		isxy = sxy - 2*sw;
-		igxy = gxy - 2*imgW;
-		s_strength_in[isxy] = (gy >= 2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gy >= 2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-2));
-		s_canAttack[isxy]   = FALSE;
+	if (ly == 0) { //top
+		isxy = sxy - sw;
+		igxy = gxy - imgW;
+		s_strength_in[isxy] = (gy != 0) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	else if (ly >= lh-2) { //bottom
-		isxy = sxy + 2*sw;
-		igxy = gxy + 2*imgW;
-		s_strength_in[isxy] = (gy < gh-2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gy < gh-2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+2));
-		s_canAttack[isxy]   = FALSE;
+	else if (ly == lh-1) { //bottom
+		isxy = sxy + sw;
+		igxy = gxy + imgW;
+		s_strength_in[isxy] = (gy != gh-1) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	if (lx < 2) { //left
-		isxy = sxy - 2;
-		igxy = gxy - 2;
-		s_strength_in[isxy] = (gx >= 2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx >= 2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-2, gy));
-		s_canAttack[isxy]   = FALSE;
+	if (lx == 0) { //left
+		isxy = sxy - 1;
+		igxy = gxy - 1;
+		s_strength_in[isxy] = (gx != 0) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	else if (lx >= lw-2) { //right
-		isxy = sxy + 2;
-		igxy = gxy + 2;
-		s_strength_in[isxy] = (gx < gw-2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx < gw-2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+2, gy));
-		s_canAttack[isxy]   = FALSE;
-	}
-	if (lx < 2 && ly < 2) {
-		isxy = sxy - 2*sw - 2;
-		igxy = gxy - 2*imgW - 2;
-		s_strength_in[isxy] = (gx >= 2 && gy >= 2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx >= 2 && gy >= 2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-2, gy-2));
-		s_canAttack[isxy]   = FALSE;
-	}
-	else if (lx >= lw-2 && ly < 2) {
-		isxy = sxy - 2*sw + 2;
-		igxy = gxy - 2*imgW + 2;
-		s_strength_in[isxy] = (gx < gw-2 && gy >= 2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx < gw-2 && gy >= 2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+2, gy-2));
-		s_canAttack[isxy]   = FALSE;
-	}
-	else if (lx < 2 && ly >= lh-2) {
-		isxy = sxy + 2*sw - 2;
-		igxy = gxy + 2*imgW - 2;
-		s_strength_in[isxy] = (gx >= 2 && gy < gh-2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx >= 2 && gy < gh-2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-2, gy+2));
-		s_canAttack[isxy]   = FALSE;
-	}
-	else if (lx >= lw-2 && ly >= lh-2) {
-		isxy = sxy + 2*sw + 2;
-		igxy = gxy + 2*imgW + 2;
-		s_strength_in[isxy] = (gx < gw-2 && gy < gh-2) ? strength_in[igxy] : 0;
-		s_labels_in[isxy]   = (gx < gw-2 && gy < gh-2) ? labels_in[igxy] : -1;
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+2, gy+2));
-		s_canAttack[isxy]   = FALSE;
-	}	
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	int label;
-	int8 neighbourLabels;
-	int8 enemies;
-
-	if (ly == 0) {
-		isxy = sxy-sw;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
-	}
-	else if (ly == lh-1) {
-		isxy = sxy+sw;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
-	}
-	if (lx == 0) {
-		isxy = sxy-1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
-	}
-	else if (lx == lw-1) {
-		isxy = sxy+1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
+	else if (lx == lw-1) { //right
+		isxy = sxy + 1;
+		igxy = gxy + 1;
+		s_strength_in[isxy] = (gx != gw-1) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
 
-	if (lx == 0 && ly == 0) {
-		isxy = sxy-sw-1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
+	if (lx == 0 && ly == 0) { //top
+		isxy = sxy - sw - 1;
+		igxy = gxy - imgW - 1;
+		s_strength_in[isxy] = (gx != 0 && gy != 0) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy-1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-
-	if (lx == lw-1 && ly == 0) {
-		isxy = sxy-sw+1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
+	else if (lx == lw-1 && ly == lh-1) { //bottom
+		isxy = sxy + sw + 1;
+		igxy = gxy + imgW + 1;
+		s_strength_in[isxy] = (gx != gw-1 && gy != gh-1) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy+1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-
-	if (lx == 0 && ly == lh-1) {
-		isxy =  sxy+sw-1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
+	if (lx == 0 && ly == lh-1) { //left
+		isxy = sxy - 1 + sw;
+		igxy = gxy - 1 + imgW;
+		s_strength_in[isxy] = (gx != 0 && gy != gh-1) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy+1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-
-	if (lx == lw-1 && ly == lh-1) {
-		isxy = sxy+sw+1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int8)
-			(s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1],
-			s_labels_in[isxy-sw-1], s_labels_in[isxy+sw+1], s_labels_in[isxy-1+sw], s_labels_in[isxy+1-sw]
-		);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(
-			enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-			enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
+	else if (lx == lw-1 && ly == 0) { //right
+		isxy = sxy + 1 - sw;
+		igxy = gxy + 1 - imgW;
+		s_strength_in[isxy] = 0;//(gx != gw-1 && gy != 0) ? strength_in[igxy] : 0;
+		s_labels_in[isxy]   = labels_in[igxy];
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy-1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-
-
-	label = s_labels_in[sxy];
-	neighbourLabels = (int8)
-		(s_labels_in[sxy-sw], s_labels_in[sxy+sw], s_labels_in[sxy-1], s_labels_in[sxy+1],
-		s_labels_in[sxy-sw-1], s_labels_in[sxy+sw+1], s_labels_in[sxy-1+sw], s_labels_in[sxy+1-sw]
-	);
-	enemies = neighbourLabels != label;
-	int nEnemies = CL_TRUE_2_TRUE*(
-		enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3 + 
-		enemies.s4 + enemies.s5 + enemies.s6 + enemies.s7) < CAN_ATTACK_THRESHOLD;
-
-	s_canAttack[sxy] = nEnemies;
-
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	float4 c = s_img[sxy];
+	int label = s_labels_in[sxy];
 	float defence = s_strength_in[sxy];
 
 	float8 attack = (float8) ( 
@@ -266,90 +185,99 @@ __kernel void evolve(
 		g_f(length(c - s_img[sxy+1-sw])) * s_strength_in[sxy+1-sw]
 	);
 
-	if (nEnemies > OVER_PROWER_THRESHOLD) {
+	if (s_enemies[sxy] > OVER_PROWER_THRESHOLD) {
 		defence = FLT_MAX;
+
+		int8 enemies = (int8) (
+			s_labels_in[sxy-sw], s_labels_in[sxy+sw], s_labels_in[sxy-1], s_labels_in[sxy+1],
+			s_labels_in[sxy-sw-1], s_labels_in[sxy+sw+1], s_labels_in[sxy-1+sw], s_labels_in[sxy+1-sw]
+			) != label;
 
 		if (gy != 0 && attack.s0 < defence && enemies.s0) {
 			defence = attack.s0;
-			label = neighbourLabels.s0;
+			label = s_labels_in[sxy-sw];
 		}
 
 		if (gy != gh-1 && attack.s1 < defence && enemies.s1) {
 			defence = attack.s1;
-			label = neighbourLabels.s1;
+			label = s_labels_in[sxy+sw];
 		}
 
 		if (gx != 0 && attack.s2 < defence && enemies.s2) {
 			defence = attack.s2;
-			label = neighbourLabels.s2;
+			label = s_labels_in[sxy-1];
 		}
 
 		if (gx != gw-1 && attack.s3 < defence && enemies.s3) {
 			defence = attack.s3;
-			label = neighbourLabels.s3;
+			label = s_labels_in[sxy+1];
 		}
 
 		if (gy != 0 && gx != 0 && attack.s4 < defence && enemies.s4) {
 			defence = attack.s4;
-			label = neighbourLabels.s4;
+			label = s_labels_in[sxy-sw-1];
 		}
 
 		if (gy != gh-1 && gx != gw-1 && attack.s5 < defence && enemies.s5) {
 			defence = attack.s5;
-			label = neighbourLabels.s5;
+			label = s_labels_in[sxy+sw+1];
 		}
 
 		if (gy != gh-1 && gx != 0 && attack.s6 < defence && enemies.s6) {
 			defence = attack.s6;
-			label = neighbourLabels.s6;
+			label = s_labels_in[sxy-1+sw];
 		}
 
 		if (gy != 0 && gx != gw-1 && attack.s7 < defence && enemies.s7) {
 			defence = attack.s7;
-			label = neighbourLabels.s7;
+			label = s_labels_in[sxy+1-sw];
 		}
 	}
 	else { 
-		if (attack.s0 > defence && s_canAttack[sxy-sw]) {
+		int8 can_attack = (int8) (
+			s_enemies[sxy-sw], s_enemies[sxy+sw], s_enemies[sxy-1], s_enemies[sxy+1],
+			s_enemies[sxy-sw-1], s_enemies[sxy+sw+1], s_enemies[sxy-1+sw], s_enemies[sxy+1-sw]
+			) < CAN_ATTACK_THRESHOLD;
+
+		if (attack.s0 > defence && can_attack.s0) {
 			defence = attack.s0;
-			label = neighbourLabels.s0;
+			label = s_labels_in[sxy-sw];
 		}
 
-		if (attack.s1 > defence && s_canAttack[sxy+sw]) {
+		if (attack.s1 > defence && can_attack.s1) {
 			defence = attack.s1;
-			label = neighbourLabels.s1;
+			label = s_labels_in[sxy+sw];
 		}
 
-		if (attack.s2 > defence && s_canAttack[sxy-1]) {
+		if (attack.s2 > defence && can_attack.s2) {
 			defence = attack.s2;
-			label = neighbourLabels.s2;
+			label = s_labels_in[sxy-1];
 		}
 
-		if (attack.s3 > defence && s_canAttack[sxy+1]) {
+		if (attack.s3 > defence && can_attack.s3) {
 			defence = attack.s3;
-			label = neighbourLabels.s3;
+			label = s_labels_in[sxy+1];
 		}
 
-		if (attack.s4 > defence && s_canAttack[sxy-sw-1]) {
+		if (attack.s4 > defence && can_attack.s4) {
 			defence = attack.s4;
-			label = neighbourLabels.s4;
+			label = s_labels_in[sxy-sw-1];
 		}
 
-		if (attack.s5 > defence && s_canAttack[sxy+sw+1]) {
+		if (attack.s5 > defence && can_attack.s5) {
 			defence = attack.s5;
-			label = neighbourLabels.s5;
+			label = s_labels_in[sxy+sw+1];
 		}
 
-		if (attack.s6 > defence && s_canAttack[sxy-1+sw]) {
+		if (attack.s6 > defence && can_attack.s6) {
 			defence = attack.s6;
-			label = neighbourLabels.s6;
+			label = s_labels_in[sxy-1+sw];
 		}
 
-		if (attack.s7 > defence && s_canAttack[sxy+1-sw]) {
+		if (attack.s7 > defence && can_attack.s7) {
 			defence = attack.s7;
-			label = neighbourLabels.s7;
+			label = s_labels_in[sxy+1-sw];
 		}
-
 	}
 
 	strength_out[gxy] = defence;
@@ -360,16 +288,17 @@ __kernel void evolve(
 
 
 
-__kernel void evolveMoore(
+__kernel void evolveVonNeumann(
 	__global int* labels_in,
 	__global int* labels_out,
 	__global float* strength_in,
 	__global float* strength_out,
+	__global int* g_enemies,
 	__global int* has_converge,
 	__local int* s_labels_in,
 	__local float* s_strength_in,
 	__local float4* s_img,
-	__local int* s_canAttack,
+	__local int* s_enemies,
 	__read_only image2d_t img,
 	sampler_t sampler
 )
@@ -385,9 +314,9 @@ __kernel void evolveMoore(
 	int lw = get_local_size(0);
 	int lh = get_local_size(1);
 
-	int sx = 2 + lx;
-	int sy = 2 + ly;
-	int sw = lw + 4;
+	int sx = 1 + lx;
+	int sy = 1 + ly;
+	int sw = lw + 2;
 	int sxy = sy*sw + sx;
 
 	//int imgW = get_image_width(img);
@@ -396,89 +325,48 @@ __kernel void evolveMoore(
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];
 	s_img[sxy]         = read_imagef(img, sampler, (int2) (gx, gy));
-	s_canAttack[sxy]   = FALSE;
+	s_enemies[sxy]     = g_enemies[gxy];
 
 	int isxy, igxy;
 
 	//load padding
-	if (ly < 2) { //top
-		isxy = sxy - 2*sw;
-		igxy = gxy - 2*imgW;
-		s_strength_in[isxy] = (gy >= 2) ? strength_in[igxy] : 0;
+	if (ly == 0) { //top
+		isxy = sxy - sw;
+		igxy = gxy - imgW;
+		s_strength_in[isxy] = (gy != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-2));
-		s_canAttack[isxy]   = FALSE;
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	else if (ly >= lh-2) { //bottom
-		isxy = sxy + 2*sw;
-		igxy = gxy + 2*imgW;
-		s_strength_in[isxy] = (gy < gh-2) ? strength_in[igxy] : 0;
+	else if (ly == lh-1) { //bottom
+		isxy = sxy + sw;
+		igxy = gxy + imgW;
+		s_strength_in[isxy] = (gy != gh-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+2));
-		s_canAttack[isxy]   = FALSE;
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+1));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	if (lx < 2) { //left
-		isxy = sxy - 2;
-		igxy = gxy - 2;
-		s_strength_in[isxy] = (gx >= 2) ? strength_in[igxy] : 0;
+	if (lx == 0) { //left
+		isxy = sxy - 1;
+		igxy = gxy - 1;
+		s_strength_in[isxy] = (gx != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-2, gy));
-		s_canAttack[isxy]   = FALSE;
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-	else if (lx >= lw-2) { //right
-		isxy = sxy + 2;
-		igxy = gxy + 2;
-		s_strength_in[isxy] = (gx < gw-2) ? strength_in[igxy] : 0;
+	else if (lx == lw-1) { //right
+		isxy = sxy + 1;
+		igxy = gxy + 1;
+		s_strength_in[isxy] = (gx != gw-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+2, gy));
-		s_canAttack[isxy]   = FALSE;
+		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy));
+		s_enemies[isxy]     = g_enemies[igxy];
 	}
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	int label;
-	int4 neighbourLabels;
-	int4 enemies;
-
-	if (ly == 0) {
-		isxy = sxy-sw;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int4) (s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1]);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(enemies.x + enemies.y + enemies.z + enemies.w) < CAN_ATTACK_THRESHOLD;
-	}
-	else if (ly == lh-1) {
-		isxy = sxy+sw;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int4) (s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1]);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(enemies.x + enemies.y + enemies.z + enemies.w) < CAN_ATTACK_THRESHOLD;
-	}
-	if (lx == 0) {
-		isxy = sxy-1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int4) (s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1]);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(enemies.x + enemies.y + enemies.z + enemies.w) < CAN_ATTACK_THRESHOLD;
-	}
-	else if (lx == lw-1) {
-		isxy = sxy+1;
-		label = s_labels_in[isxy];
-		neighbourLabels = (int4) (s_labels_in[isxy-sw], s_labels_in[isxy+sw], s_labels_in[isxy-1], s_labels_in[isxy+1]);
-		enemies = neighbourLabels != label;
-		s_canAttack[isxy] = CL_TRUE_2_TRUE*(enemies.x + enemies.y + enemies.z + enemies.w) < CAN_ATTACK_THRESHOLD;
-	}
-
-	label = s_labels_in[sxy];
-	neighbourLabels = (int4) (s_labels_in[sxy-sw], s_labels_in[sxy+sw], s_labels_in[sxy-1], s_labels_in[sxy+1]);
-	enemies = neighbourLabels != label;
-	int nEnemies = CL_TRUE_2_TRUE*(enemies.x + enemies.y + enemies.z + enemies.w);
-
-	s_canAttack[sxy] = nEnemies < CAN_ATTACK_THRESHOLD;
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	float4 c = s_img[sxy];
+	int label = s_labels_in[sxy];
 	float defence = s_strength_in[sxy];
 
 	float4 attack = (float4) ( 
@@ -488,48 +376,48 @@ __kernel void evolveMoore(
 		g_f(length(c - s_img[sxy+1])) * s_strength_in[sxy+1]
 	);
 
-	if (nEnemies > OVER_PROWER_THRESHOLD) {
+	if (s_enemies[sxy] > OVER_PROWER_THRESHOLD) {
 		defence = FLT_MAX;
 
-		if (attack.x < defence && enemies.x) {
+		if (attack.x < defence && s_labels_in[sxy-sw] != label) {
 			defence = attack.x;
-			label = neighbourLabels.x;
+			label = s_labels_in[sxy-sw];
 		}
 
-		if (attack.y < defence && enemies.y) {
+		if (attack.y < defence && s_labels_in[sxy+sw] != label) {
 			defence = attack.y;
-			label = neighbourLabels.y;
+			label = s_labels_in[sxy+sw];
 		}
 
-		if (attack.z < defence && enemies.z) {
+		if (attack.z < defence && s_labels_in[sxy-1] != label) {
 			defence = attack.z;
-			label = neighbourLabels.z;
+			label = s_labels_in[sxy-1];
 		}
 
-		if (attack.w < defence && enemies.w) {
+		if (attack.w < defence && s_labels_in[sxy+1] != label) {
 			defence = attack.w;
-			label = neighbourLabels.w;
+			label = s_labels_in[sxy+1];
 		}
 	}
 	else {
-		if (attack.x > defence && s_canAttack[sxy-sw] == TRUE) {
+		if (attack.x > defence && s_enemies[sxy-sw] < CAN_ATTACK_THRESHOLD) {
 			defence = attack.x;
-			label = neighbourLabels.x;
+			label = s_labels_in[sxy-sw];
 		}
 
-		if (attack.y > defence && s_canAttack[sxy+sw] == TRUE) {
+		if (attack.y > defence && s_enemies[sxy+sw] < CAN_ATTACK_THRESHOLD) {
 			defence = attack.y;
-			label = neighbourLabels.y;
+			label = s_labels_in[sxy+sw];
 		}
 
-		if (attack.z > defence && s_canAttack[sxy-1] == TRUE) {
+		if (attack.z > defence && s_enemies[sxy-1] < CAN_ATTACK_THRESHOLD) {
 			defence = attack.z;
-			label = neighbourLabels.z;
+			label = s_labels_in[sxy-1];
 		}
 
-		if (attack.w > defence && s_canAttack[sxy+1] == TRUE) {
+		if (attack.w > defence && s_enemies[sxy+1] < CAN_ATTACK_THRESHOLD) {
 			defence = attack.w;
-			label = neighbourLabels.w;
+			label = s_labels_in[sxy+1];
 		}
 	}
 

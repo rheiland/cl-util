@@ -28,6 +28,7 @@ class GrowCut():
 		program = createProgram(context, devices, options, filename)
 
 		self.kernEvolve = cl.Kernel(program, 'evolve')
+		self.kernCountEnemies = cl.Kernel(program, 'countEnemies')
 
 		if type(img) == cl.GLBuffer:
 				raise ValueError("CL Buffer not implemented")
@@ -45,6 +46,7 @@ class GrowCut():
 		elif type(img) == cl.Image:
 			raise NotImplementedError("CL image not implemented")
 
+		self.hEnemiesIn = np.zeros(shapeNP,np.int32)
 		self.hLabelsIn = np.zeros(shapeNP,np.int32)
 		self.hLabelsOut = np.empty(shapeNP, np.int32)
 		self.hStrengthIn = np.zeros(shapeNP, np.float32)
@@ -53,6 +55,7 @@ class GrowCut():
 
 		self.hHasConverged[0] = False
 
+		self.dEnemies = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hEnemiesIn)
 		self.dLabelsIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsIn)
 		self.dLabelsOut = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsOut)
 		self.dStrengthIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthIn)
@@ -64,11 +67,12 @@ class GrowCut():
 			self.dLabelsOut,
 			self.dStrengthIn,
 			self.dStrengthOut,
+			self.dEnemies,
 			self.dHasConverged,
-			cl.LocalMemory(szInt*(self.lw[0]+4)*(self.lw[1]+4)),
-			cl.LocalMemory(szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
-			cl.LocalMemory(4*szFloat*(self.lw[0]+4)*(self.lw[1]+4)),
-			cl.LocalMemory(szInt*(self.lw[0]+4)*(self.lw[1]+4)),
+			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(4*szFloat*(self.lw[0]+2)*(self.lw[1]+2)),
+			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
 			self.dImg,
 			cl.Sampler(clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
 		]
@@ -76,6 +80,18 @@ class GrowCut():
 		self.gWorksize = roundUp(shapeCL, self.lw)
 
 	def evolve(self, queue):
+		argsCount = [
+			self.dLabelsIn,
+			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
+			self.dEnemies
+		]
+
+		elapsed = 0;
+		event = self.kernCountEnemies(queue, self.gWorksize, self.lw, *argsCount)
+		event.wait()
+		elapsed += event.profile.end - event.profile.start
+		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
+
 		self.args[0] = self.dLabelsIn
 		self.args[1] = self.dLabelsOut
 		self.args[2] = self.dStrengthIn
@@ -125,6 +141,11 @@ if __name__ == "__main__":
 	shapeNP = roundUp(shapeNP, GrowCut.lw)
 	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
+	def mapEnemies():
+		m = 0
+		M = 4
+		colorize.colorize(queue, growCut.dEnemies, val=(m, M), dOut=vEnemies, typeIn=np.int32)
+
 	def mapLabels():
 		m = 0
 		M = 10
@@ -135,11 +156,13 @@ if __name__ == "__main__":
 		M = 2
 		colorize.colorize(queue, growCut.dStrengthIn, val=(m, M), dOut=vStrength)
 
+	vEnemies = window.addView(shapeNP, 'enemies', cm.WRITE_ONLY, True)
 	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
 	vStrength = window.addView(shapeNP, 'strength', cm.WRITE_ONLY, True)
 	vLabels = window.addView(shapeNP, 'labels', cm.READ_WRITE, True)
 	vImg = window.addViewNp(hImg, 'Image', cl.mem_flags.READ_ONLY)
 
+	window.setLayerMap('enemies', mapEnemies)
 	window.setLayerMap('labels', mapLabels)
 	window.setLayerMap('strength', mapStrength)
 	window.setLayerOpacity('strokes', 0.0)
