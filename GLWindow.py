@@ -6,7 +6,6 @@ from PyQt4 import QtCore, QtGui
 
 from GLCanvas import GLCanvas
 import pyopencl as cl
-from pyopencl.tools import get_gl_sharing_context_properties
 from Colorize import Colorize
 import numpy as np
 
@@ -94,24 +93,26 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.setCentralWidget(splitter)
 
-		self.initGL()
-		self.initCL()
+#		self.initGL()
+#		self.initCL()
 
-		self.colorize = Colorize(self.clContext, self.clContext.devices)
+#		self.colorize = Colorize(self.clContext, self.clContext.devices)
+
+		self.clContext = self.canvas.clContext
 
 		self.installEventFilter(self)
-		self.canvas.installEventFilter(self)
+#		self.canvas.installEventFilter(self)
 
 		self.resize(100 + shape[0] + 24, shape[1] + 10)
+
+
+
 
 	def addButton(self, name, action):
 		btn = QtGui.QPushButton(name)
 		self.widgetButtons.layout().addWidget(btn)
 
 		btn.clicked.connect(action)
-
-	def initGL(self):
-		self.glContext = self.canvas.context()
 
 	def addViewNp(self, arr, name=None, mem_flags=cm.READ_ONLY, buffer=False):
 		view = self.addView(arr.shape, name, mem_flags, buffer)
@@ -135,7 +136,23 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.updateCanvas()
 
-	def addView(self, shape, name=None, mem_flags=cm.READ_ONLY, buffer=False):
+	def addLayer(self, name, clobj, shape=None, opacity=None, datatype=None, filter=None):
+		layer = self.canvas.addLayer(clobj, shape, opacity, datatype, filter=filter)
+
+		item = QtGui.QListWidgetItem(name)
+		item.setText(name)
+		item.setFlags(	QtCore.Qt.ItemIsUserCheckable |
+						QtCore.Qt.ItemIsDragEnabled |
+						QtCore.Qt.ItemIsSelectable |
+						QtCore.Qt.ItemIsEnabled)
+		item.setCheckState(QtCore.Qt.Checked)
+		item.layer = layer
+
+		self.layerList.addItem(item)
+
+		return layer
+
+	def addView2(self, shape, name=None, mem_flags=cm.READ_ONLY, buffer=False):
 		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])
 		view = GLCanvas.View(shape, pos, pbo=buffer)
 
@@ -158,28 +175,15 @@ class GLWindow(QtGui.QMainWindow):
 		else:
 			return cl.GLTexture(self.clContext, mem_flags, GL_TEXTURE_2D, 0, int(view.tex), 2)
 
-	def initCL(self):
-		platforms = cl.get_platforms()
-
-		if sys.platform == "darwin":
-			self.clContext = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
-		else:
-			try:
-				properties = [(cl.context_properties.PLATFORM, platforms)] + get_gl_sharing_context_properties()
-				self.clContext = cl.Context(properties)
-			except:
-				raise SystemError('Could not create OpenCL context')
-
-		self.queue = cl.CommandQueue(self.clContext)
 
 	def sigCurrentLayerChanged(self, item):
-		layer = item.view
+		layer = item.layer
 
 	def sigLayerOpacity(self, value):
 		if self.layerList.currentItem() == None:
 			return
 
-		item = self.layerList.currentItem().view
+		item = self.layerList.currentItem().layer
 		item.opacity = float(value)/100
 
 		self.updateCanvas()
@@ -189,7 +193,7 @@ class GLWindow(QtGui.QMainWindow):
 
 	def sigLayerClicked(self, item):
 		checked = item.checkState() == QtCore.Qt.Unchecked
-		layer = item.view
+		layer = item.layer
 
 		if layer.enabled == checked:
 			layer.enabled = not layer.enabled
@@ -236,19 +240,18 @@ class GLWindow(QtGui.QMainWindow):
 			self.userMouseDrag(pos1, pos2)
 
 	def eventFilter(self, object, event):
-		if object == self:
-			if hasattr(self, 'userKeyPress') and event.type() == QtCore.QEvent.KeyPress:
-				self.userKeyPress(event.key())
+		if hasattr(self, 'userKeyPress') and event.type() == QtCore.QEvent.KeyPress:
+			self.userKeyPress(event.key())
 
-				return True
-
-		elif object == self.canvas and event.type() == QtCore.QEvent.Paint:
-			for i in range(self.layerList.count()):
-				layer = self.layerList.item(i)
-
-				if layer.map:
-					layer.map()
-
-			return False
+			return True
 
 		return False
+
+	def drawLayer(self):
+		for i in range(self.layerList.count()):
+			layer = self.layerList.item(i)
+
+			if layer.map:
+				layer.map()
+			else:
+				pass

@@ -3,7 +3,7 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os
-from clutil import roundUp, padArray2D, createProgram
+from clutil import roundUp, padArray2D, createProgram, formatForCLImage2D
 
 NEIGHBOURHOOD_VON_NEUMANN = 0
 NEIGHBOURHOOD_MOORE = 0
@@ -35,6 +35,8 @@ class GrowCut():
 		elif type(img) == np.ndarray:
 			raise NotImplementedError("NP arrays not implemented")
 		elif type(img) == cl.GLTexture:
+			raise NotImplementedError("GL Texture not implemented")
+		elif type(img) == cl.Image:
 			self.dImg = img
 
 			width = img.get_image_info(cl.image_info.WIDTH)
@@ -42,9 +44,6 @@ class GrowCut():
 
 			shapeNP = (height, width)
 			shapeCL = (width, height)
-
-		elif type(img) == cl.Image:
-			raise NotImplementedError("CL image not implemented")
 
 		self.hEnemiesIn = np.zeros(shapeNP,np.int32)
 		self.hLabelsIn = np.zeros(shapeNP,np.int32)
@@ -86,23 +85,22 @@ class GrowCut():
 			self.dEnemies
 		]
 
-		elapsed = 0;
+#		elapsed = 0;
 		event = self.kernCountEnemies(queue, self.gWorksize, self.lw, *argsCount)
 		event.wait()
-		elapsed += event.profile.end - event.profile.start
-		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
+#		elapsed += event.profile.end - event.profile.start
+#		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
 
 		self.args[0] = self.dLabelsIn
 		self.args[1] = self.dLabelsOut
 		self.args[2] = self.dStrengthIn
 		self.args[3] = self.dStrengthOut
 
-		elapsed = 0;
+#		elapsed = 0;
 		event = self.kernEvolve(queue, self.gWorksize, self.lw, *self.args)
 		event.wait()
-		elapsed += event.profile.end - event.profile.start
-
-		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
+#		elapsed += event.profile.end - event.profile.start
+#		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
 
 		cl.enqueue_copy(queue, self.hLabelsOut, self.dLabelsOut).wait()
 		cl.enqueue_copy(queue, self.hStrengthOut, self.dStrengthOut).wait()
@@ -131,7 +129,7 @@ if __name__ == "__main__":
 	app = QtGui.QApplication(sys.argv)
 	window = GLWindow(img.size)
 	clContext = window.clContext
-	glContext = window.glContext
+#	glContext = window.glContext
 	devices = clContext.get_info(cl.context_info.DEVICES)
 	queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
@@ -139,53 +137,59 @@ if __name__ == "__main__":
 
 	shapeNP = (img.size[1], img.size[0])
 	shapeNP = roundUp(shapeNP, GrowCut.lw)
+	shapeCL = (shapeNP[1], shapeNP[0])
+
 	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-	def mapEnemies():
-		m = 0
-		M = 4
-		colorize.colorize(queue, growCut.dEnemies, val=(m, M), dOut=vEnemies, typeIn=np.int32)
 
-	def mapLabels():
-		m = 0
-		M = 10
-		colorize.colorize(queue, growCut.dLabelsIn, val=(m, M), dOut=vLabels, typeIn=np.int32)
+#	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
+#	hStrokes = np.random.randint(0, 10, int(np.prod(shapeCL))).astype(np.int32)
+#	cl.enqueue_copy(queue, dStrokes, hStrokes)
 
-	def mapStrength():
-		m = 0
-		M = 2
-		colorize.colorize(queue, growCut.dStrengthIn, val=(m, M), dOut=vStrength)
+	dImg = cl.Image(clContext,
+		cl.mem_flags.READ_ONLY,
+#		cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT32),
+		cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
+		shapeCL
+	)
 
-	vEnemies = window.addView(shapeNP, 'enemies', cm.WRITE_ONLY, True)
-	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
-	vStrength = window.addView(shapeNP, 'strength', cm.WRITE_ONLY, True)
-	vLabels = window.addView(shapeNP, 'labels', cm.READ_WRITE, True)
-	vImg = window.addViewNp(hImg, 'Image', cl.mem_flags.READ_ONLY)
+	cl.enqueue_copy(queue, dImg, hImg, origin=(0,0), region=shapeCL)
 
-	window.setLayerMap('enemies', mapEnemies)
-	window.setLayerMap('labels', mapLabels)
-	window.setLayerMap('strength', mapStrength)
-	window.setLayerOpacity('strokes', 0.0)
-	window.setLayerOpacity('strength', 0.0)
-	window.setLayerOpacity('labels', 0.7)
-	window.setLayerOpacity('strokes', 1.0)
+	dStrokes = cl.Buffer(clContext, cm.READ_WRITE, szInt*int(np.prod(shapeCL)))
+
+
+#	window.setLayerMap('enemies', mapEnemies)
+#	window.setLayerMap('labels', mapLabels)
+#	window.setLayerMap('strength', mapStrength)
+#	window.setLayerOpacity('strokes', 0.0)
+#	window.setLayerOpacity('strength', 0.0)
+#	window.setLayerOpacity('labels', 0.7)
+#	window.setLayerOpacity('strokes', 1.0)
 
 	brushArgs = [
 #		'__write_only image2d_t strokes',
-		'__global uint* strokes',
+		'__global int* strokes',
 		'__global int* labels_in',
 		'__global float* strength_in',
 		'int label',
 		'int canvasW'
 	]
 #	brushCode = 'write_imagef(strokes, gcoord, rgba2f4(label)/255.0f);\n'
-	brushCode = 'strokes[gcoord.y*canvasW + gcoord.x] = 0xFF000000 | 50*label;\n'
+	brushCode = 'strokes[gcoord.y*canvasW + gcoord.x] = label;\n'
 	brushCode += 'strength_in[gcoord.y*canvasW + gcoord.x] = 1;\n'
 	brushCode += 'labels_in[gcoord.y*canvasW + gcoord.x] = label;\n'
 
 	brush = Brush(clContext, devices, brushArgs, brushCode)
 
-	growCut = GrowCut(clContext, devices, vImg)
+	growCut = GrowCut(clContext, devices, dImg)
+
+	filter = window.canvas.Filter((0, 3), (0, 240))
+
+	layer = window.addLayer('stroke', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
+	layer = window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32)
+	layer = window.addLayer('image', dImg)
+	layer = window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32)
+	layer = window.addLayer('strength', growCut.dStrengthIn, shapeCL, datatype=np.float32)
 
 	label = 1
 
@@ -194,35 +198,31 @@ if __name__ == "__main__":
 		label = not label
 		pass
 
-	def next():
-		growCut.evolve(queue)
-		window.updateCanvas()
-
 	iteration = 0
-	refresh = 50
+	refresh = 1
 
-	def mouseDrag(pos1, pos2):
+	def next():
 		global iteration
 
+		growCut.evolve(queue)
+
+		if iteration % refresh == 0:
+			window.updateCanvas()
+
+			iteration += 1
+
+	def mouseDrag(pos1, pos2):
 		if pos1 == pos2:
 			return
 
-		brush.draw_gpu(queue, [vStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
+		brush.draw_gpu(queue, [dStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
 
-		if iteration % refresh == 0:
-			window.updateCanvas()
-
-		iteration += 1
+		window.updateCanvas()
 
 	def mousePress(pos):
-		global iteration
+		brush.draw_gpu(queue, [dStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos)
 
-		brush.draw_gpu(queue, [vStrokes, growCut.dLabelsIn, growCut.dStrengthIn, np.int32(label), np.int32(shapeNP[1])], pos)
-
-		if iteration % refresh == 0:
-			window.updateCanvas()
-
-		iteration += 1
+		window.updateCanvas()
 
 	def keyPress(key):
 		global label

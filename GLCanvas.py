@@ -1,9 +1,14 @@
 __author__ = 'Marc de Klerk'
 
-import sys
+import os, sys
 
 from PyQt4 import QtCore, QtGui, QtOpenGL
 import numpy as np
+
+import pyopencl as cl
+from pyopencl.tools import get_gl_sharing_context_properties
+
+from clutil import roundUp, padArray2D, createProgram
 
 try:
 	from OpenGL.GL import *
@@ -13,35 +18,27 @@ except ImportError:
 	sys.exit(1)
 from OpenGL.raw.GL.VERSION.GL_1_5 import glBufferData as rawGlBufferData
 
+cm = cl.mem_flags
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
 
+LWORKGROUP = (16, 16)
+
 class GLCanvas(QtOpenGL.QGLWidget):
-	class View:
-		def __init__(self, shape, pos, enabled=True, opacity=1.0, pbo=False):
-			self.opacity = opacity
+	class Filter:
+		def __init__(self, range, hues):
+			self.range = range
+			self.hues = hues
+
+	class Layer:
+		def __init__(self, clobj, shape=None, pos=None, enabled=True, opacity=1.0, datatype=None, filter=filter):
+			self.clobj = clobj
+			self.opacity = opacity if opacity != None else 1.0
 			self.shape = shape
 			self.enabled = enabled
-			self.map = None
 			self.pos = pos
-			self.pbo = False
-
-			if pbo:
-				self.pbo = glGenBuffers(1)
-				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self.pbo)
-				glBufferData(GL_PIXEL_UNPACK_BUFFER, szInt*shape[1]*shape[0], None, GL_STATIC_DRAW)
-
-			self.tex = glGenTextures(1)
-
-			glBindTexture(GL_TEXTURE_2D, self.tex)
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, shape[1], shape[0], 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
-
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-
-			glFinish()
+			self.datatype = datatype
+			self.filter = filter
 
 	def __init__(self, shape, parent=None):
 		super(GLCanvas, self).__init__(parent)
@@ -64,8 +61,65 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.resize(self.zoom*self.width, self.zoom*self.height)
 
 		self.initializeGL()
+		self.initCL()
 
 		self.installEventFilter(self)
+
+		self.fbo = glGenFramebuffers(1)
+		self.rbos = glGenRenderbuffers(2)
+		self.rbosCL = [None, None]
+		for i in [0, 1]:
+			glBindRenderbuffer(GL_RENDERBUFFER, self.rbos[i])
+			glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA, self.width, self.height)
+			self.rbosCL[i] = cl.GLRenderBuffer(self.clContext, cm.READ_WRITE, int(self.rbos[i]))
+
+#		glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)
+
+		self.rboRead = 0
+		self.rboWrite = 1
+
+		self.layers = []
+
+		devices = self.clContext.get_info(cl.context_info.DEVICES)
+		queue = cl.CommandQueue(self.clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
+
+		filename = os.path.join(os.path.dirname(__file__), 'clwindow.cl')
+		program = createProgram(self.clContext, devices, [], filename)
+
+		self.kernBlend_ui = cl.Kernel(program, 'blend_ui')
+		self.kernBuffer_f32 = cl.Kernel(program, 'buffer_f32')
+		self.kernBuffer_i32 = cl.Kernel(program, 'buffer_i32')
+		self.kernFlip = cl.Kernel(program, 'flip')
+
+
+	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filter=filter):
+		if type(clobj) == cl.Image:
+			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
+		elif type(clobj) == cl.Buffer:
+			if shape == None:
+				raise ValueError('shape required with CL Buffer')
+
+		layer = GLCanvas.Layer(clobj, shape=shape, opacity=opacity, datatype=datatype, filter=filter)
+		self.layers.append(layer)
+
+		return layer
+
+	def initCL(self):
+		platforms = cl.get_platforms()
+
+		if sys.platform == "darwin":
+			self.clContext = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
+		else:
+			try:
+				properties = [(cl.context_properties.PLATFORM, platforms)] + get_gl_sharing_context_properties()
+				self.clContext = cl.Context(properties)
+			except:
+				raise SystemError('Could not create OpenCL context')
+
+		self.queue = cl.CommandQueue(self.clContext)
+
+	def paintRenderBuffer(self):
+		pass
 
 	def setZoom(self, value):
 		self.zoom = value
@@ -83,13 +137,19 @@ class GLCanvas(QtOpenGL.QGLWidget):
 
 		glClearColor(0.0, 0.0, 0.0, 0.0)
 
+	def swapRbos(self):
+		self.rboRead = not self.rboRead
+		self.rboWrite = not self.rboWrite
+
 	def paintEvent(self, event):
 		r = event.rect()
 
 		self.transX = -r.x()
-		self.transY = -(self.zoom*self.height - r.height()) + r.y()
+		self.transY = -int(self.zoom*self.height - r.height()) + r.y()
 
 		self.viewport = (r.width(), r.height())
+
+		self.rect = event.rect()
 
 		self.makeCurrent()
 
@@ -101,59 +161,105 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		glFlush()
 
 	def paintGL(self):
-		glViewport(0, 0, self.viewport[0], self.viewport[1])
-		glMatrixMode(GL_PROJECTION)
-		glLoadIdentity()
-		glOrtho(0, self.viewport[0], 0, self.viewport[1], -1, 1)
-		glTranslatef(self.transX, self.transY, 0)
-		glScalef(self.zoom, self.zoom, 1)
-		glMatrixMode(GL_MODELVIEW)
-		glLoadIdentity()
-
-		glClear(GL_COLOR_BUFFER_BIT)
-
 		if len(self.layers) == 0:
 			return
 
-		glEnable(GL_TEXTURE_2D)
-		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
+		#clear the read  renderbuffer
+		glBindRenderbuffer(GL_RENDERBUFFER, self.rbos[self.rboRead])
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.fbo)
+		glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, self.rbos[self.rboRead])
 
-		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+		glClear(GL_COLOR_BUFFER_BIT)
+
+		cl.enqueue_acquire_gl_objects(self.queue, self.rbosCL)
 
 		for layer in reversed(self.layers):
 			if not layer.enabled or layer.opacity == 0:
 				continue
 
-			if layer.pos:
-				glPushMatrix()
-				glLoadIdentity()
-				glTranslatef(layer.pos[1], layer.pos[0], 0)
+			gw = roundUp(layer.shape, LWORKGROUP)
+			args = [
+				self.rbosCL[self.rboRead],
+				self.rbosCL[self.rboWrite],
+				cl.Sampler(self.clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+				np.float32(layer.opacity)
+			]
 
-			glColor4f(1.0, 1.0, 1.0, layer.opacity);
+			if layer.filter == None:
+				if type(layer.clobj) == cl.Image:
+					args += [
+						layer.clobj
+					]
 
-			if layer.pbo:
-				glBindBuffer(GL_PIXEL_UNPACK_BUFFER, layer.pbo)
-				glBindTexture(GL_TEXTURE_2D, layer.tex)
-				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, layer.shape[1], layer.shape[0], GL_RGBA, GL_UNSIGNED_BYTE, None)
+					self.kernBlend_ui(self.queue, gw, LWORKGROUP, *args)
+				elif type(layer.clobj) == cl.Buffer:
+					if layer.datatype == np.float32:
+						args += [
+							np.array([0, 1.0], np.float32),
+							np.array([0, 240], np.int32),
+							layer.clobj,
+							np.array(layer.shape, np.int32)
+						]
+						self.kernBuffer_f32(self.queue, gw, LWORKGROUP, *args)
+					elif layer.datatype == np.int32:
+						args += [
+							np.array([0, 10], np.int32),
+							np.array([0, 240], np.int32),
+							layer.clobj,
+							np.array(layer.shape, np.int32)
+						]
+						self.kernBuffer_i32(self.queue, gw, LWORKGROUP, *args)
 			else:
-				glBindTexture(GL_TEXTURE_2D, layer.tex)
+				if type(layer.clobj) == cl.Image:
+					pass
+				elif type(layer.clobj) == cl.Buffer:
+					if layer.datatype == np.float32:
+						pass
+					elif layer.datatype == np.int32:
+						args += [
+							np.array(layer.filter.range, np.int32),
+							np.array(layer.filter.hues, np.int32),
+							layer.clobj,
+							np.array(layer.shape, np.int32)
+						]
+						self.kernBuffer_i32(self.queue, gw, LWORKGROUP, *args)
 
-			glBegin(GL_QUADS)
-			glVertex2i(0, 0)
-			glTexCoord2i(0, 0)
-			glVertex2i(0, layer.shape[0])
-			glTexCoord2i(1, 0)
-			glVertex2i(layer.shape[1], layer.shape[0])
-			glTexCoord2i(1, 1)
-			glVertex2i(layer.shape[1], 0)
-			glTexCoord2i(0, 1)
-			glEnd()
+			self.queue.finish()
 
-			if layer.pos:
-				glPopMatrix()
+			self.swapRbos()
 
-		glDisable(GL_BLEND)
+		cl.enqueue_release_gl_objects(self.queue, self.rbosCL)
+
+		gw = roundUp(layer.shape, LWORKGROUP)
+		args = [
+			self.rbosCL[self.rboRead],
+			self.rbosCL[self.rboWrite],
+			cl.Sampler(self.clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+		]
+
+		self.kernFlip(self.queue, gw, LWORKGROUP, *args)
+
+		self.queue.finish()
+
+#		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.fbo)
+
+		#Prepare to render into the renderbuffer
+		glBindRenderbuffer(GL_RENDERBUFFER, self.rbos[self.rboWrite])
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
+		glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, self.rbos[self.rboWrite])
+
+		#Set up to read from the renderbuffer and draw to window-system framebuffer
+#		glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		glViewport(0, 0, self.viewport[0], self.viewport[1])
+
+		#Do the copy
+		glBlitFramebuffer(
+			int(self.rect.x()/self.zoom),
+			self.height - int((self.rect.y() + self.rect.height())/self.zoom),
+			int((self.rect.x() + self.rect.width())/self.zoom),
+			self.height - int(self.rect.y()/self.zoom),
+			0, 0, self.rect.width(), self.rect.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
 	def eventFilter(self, object, event):
 		if hasattr(self, 'mouseDrag') and \

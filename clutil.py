@@ -126,4 +126,10 @@ def padArray2D(arr, shape, mode):
 	from numpy import pad
 
 	padding = [(0, shape[0]-arr.shape[0]), (0, shape[1]-arr.shape[1])]
+
 	return pad(arr, padding, mode)
+
+def formatForCLImage2D(arr):
+	import numpy as np
+
+	return arr.view(np.int8).astype(np.float32).reshape(arr.shape+(-1,))

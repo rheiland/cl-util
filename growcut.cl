@@ -15,14 +15,20 @@
 
 //max(norm_f(c)) = sqrt(3*255*255) = 441.67295593006372
 //max(norm_ui(c)) = sqrt(3*1.0*1.0) = 1.7320508075688772
-#define g_f(x) (1.0f - (x/1.7320508075688772f))
-#define g_ui(x) (1.0f - (x/441.67295593006372f))
+#define g_norm(x) (1.0f - (x/1.7320508075688772f))
+#define g(x) (1.0f - (x/441.67295593006372f))
 
 #define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, 0)
 #define rgba_f2_to_uint(c) (uint) (0xFF << 24 | ((int) (255*c.z)) << 16 | ((int) (255*c.y)) << 8 | (int) (255*c.x))
 
 #define CAN_ATTACK_THRESHOLD 6
 #define OVER_PROWER_THRESHOLD 6
+
+float norm_length_ui(uint4 vector) {
+	float4 f = (float4) (((float) vector.x)/255, ((float) vector.y)/255, ((float) vector.z)/255, ((float) vector.w)/255);
+
+	return length(f);
+}
 
 __kernel void countEnemies(
 	__global int* labels,
@@ -61,6 +67,10 @@ __kernel void countEnemies(
 	g_enemies[gxy] = CL_TRUE_2_TRUE*(enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3);
 }
 
+float4 norm_rgba_ui4(uint4 rgba) {
+	return (float4) (((float) rgba.x)/255, ((float) rgba.y)/255, ((float) rgba.z)/255, ((float) rgba.w)/255);
+}
+
 __kernel void evolve(
 	__global int* labels_in,
 	__global int* labels_out,
@@ -96,7 +106,7 @@ __kernel void evolve(
 
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];
-	s_img[sxy]         = read_imagef(img, sampler, (int2) (gx, gy));
+	s_img[sxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy)));
 	s_enemies[sxy]     = g_enemies[gxy];
 
 	int isxy, igxy;
@@ -107,7 +117,7 @@ __kernel void evolve(
 		igxy = gxy - imgW;
 		s_strength_in[isxy] = (gy != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy-1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (ly == lh-1) { //bottom
@@ -115,7 +125,7 @@ __kernel void evolve(
 		igxy = gxy + imgW;
 		s_strength_in[isxy] = (gy != gh-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy+1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	if (lx == 0) { //left
@@ -123,7 +133,7 @@ __kernel void evolve(
 		igxy = gxy - 1;
 		s_strength_in[isxy] = (gx != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx-1, gy)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (lx == lw-1) { //right
@@ -131,7 +141,7 @@ __kernel void evolve(
 		igxy = gxy + 1;
 		s_strength_in[isxy] = (gx != gw-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx+1, gy)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 
@@ -140,7 +150,7 @@ __kernel void evolve(
 		igxy = gxy - imgW - 1;
 		s_strength_in[isxy] = (gx != 0 && gy != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy-1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx-1, gy-1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (lx == lw-1 && ly == lh-1) { //bottom
@@ -148,7 +158,7 @@ __kernel void evolve(
 		igxy = gxy + imgW + 1;
 		s_strength_in[isxy] = (gx != gw-1 && gy != gh-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy+1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx+1, gy+1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	if (lx == 0 && ly == lh-1) { //left
@@ -156,7 +166,7 @@ __kernel void evolve(
 		igxy = gxy - 1 + imgW;
 		s_strength_in[isxy] = (gx != 0 && gy != gh-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy+1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx-1, gy+1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (lx == lw-1 && ly == 0) { //right
@@ -164,7 +174,7 @@ __kernel void evolve(
 		igxy = gxy + 1 - imgW;
 		s_strength_in[isxy] = 0;//(gx != gw-1 && gy != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy-1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx+1, gy-1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -174,14 +184,14 @@ __kernel void evolve(
 	float defence = s_strength_in[sxy];
 
 	float8 attack = (float8) ( 
-		g_f(length(c - s_img[sxy-sw])) * s_strength_in[sxy-sw],
-		g_f(length(c - s_img[sxy+sw])) * s_strength_in[sxy+sw],
-		g_f(length(c - s_img[sxy-1])) * s_strength_in[sxy-1],
-		g_f(length(c - s_img[sxy+1])) * s_strength_in[sxy+1],
-		g_f(length(c - s_img[sxy-sw-1])) * s_strength_in[sxy-sw-1],
-		g_f(length(c - s_img[sxy+sw+1])) * s_strength_in[sxy+sw+1],
-		g_f(length(c - s_img[sxy-1+sw])) * s_strength_in[sxy-1+sw],
-		g_f(length(c - s_img[sxy+1-sw])) * s_strength_in[sxy+1-sw]
+		g_norm(length(c - s_img[sxy-sw])) * s_strength_in[sxy-sw],
+		g_norm(length(c - s_img[sxy+sw])) * s_strength_in[sxy+sw],
+		g_norm(length(c - s_img[sxy-1])) * s_strength_in[sxy-1],
+		g_norm(length(c - s_img[sxy+1])) * s_strength_in[sxy+1],
+		g_norm(length(c - s_img[sxy-sw-1])) * s_strength_in[sxy-sw-1],
+		g_norm(length(c - s_img[sxy+sw+1])) * s_strength_in[sxy+sw+1],
+		g_norm(length(c - s_img[sxy-1+sw])) * s_strength_in[sxy-1+sw],
+		g_norm(length(c - s_img[sxy+1-sw])) * s_strength_in[sxy+1-sw]
 	);
 
 	if (s_enemies[sxy] > OVER_PROWER_THRESHOLD) {
@@ -319,7 +329,7 @@ __kernel void evolveVonNeumann(
 
 	s_labels_in[sxy]   = labels_in[gxy];
 	s_strength_in[sxy] = strength_in[gxy];
-	s_img[sxy]         = read_imagef(img, sampler, (int2) (gx, gy));
+	s_img[sxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy)));
 	s_enemies[sxy]     = g_enemies[gxy];
 
 	int isxy, igxy;
@@ -330,7 +340,7 @@ __kernel void evolveVonNeumann(
 		igxy = gxy - imgW;
 		s_strength_in[isxy] = (gy != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy-1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy-1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (ly == lh-1) { //bottom
@@ -338,7 +348,7 @@ __kernel void evolveVonNeumann(
 		igxy = gxy + imgW;
 		s_strength_in[isxy] = (gy != gh-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx, gy+1));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx, gy+1)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	if (lx == 0) { //left
@@ -346,7 +356,7 @@ __kernel void evolveVonNeumann(
 		igxy = gxy - 1;
 		s_strength_in[isxy] = (gx != 0) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx-1, gy));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx-1, gy)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 	else if (lx == lw-1) { //right
@@ -354,7 +364,7 @@ __kernel void evolveVonNeumann(
 		igxy = gxy + 1;
 		s_strength_in[isxy] = (gx != gw-1) ? strength_in[igxy] : 0;
 		s_labels_in[isxy]   = labels_in[igxy];
-		s_img[isxy]         = read_imagef(img, sampler, (int2) (gx+1, gy));
+		s_img[isxy]         = norm_rgba_ui4(read_imageui(img, sampler, (int2) (gx+1, gy)));
 		s_enemies[isxy]     = g_enemies[igxy];
 	}
 
@@ -364,11 +374,11 @@ __kernel void evolveVonNeumann(
 	int label = s_labels_in[sxy];
 	float defence = s_strength_in[sxy];
 
-	float4 attack = (float4) ( 
-		g_f(length(c - s_img[sxy-sw])) * s_strength_in[sxy-sw],
-		g_f(length(c - s_img[sxy+sw])) * s_strength_in[sxy+sw],
-		g_f(length(c - s_img[sxy-1])) * s_strength_in[sxy-1],
-		g_f(length(c - s_img[sxy+1])) * s_strength_in[sxy+1]
+	float4 attack = (float4) (
+		g_norm(length(c - s_img[sxy-sw])) * s_strength_in[sxy-sw],
+		g_norm(length(c - s_img[sxy+sw])) * s_strength_in[sxy+sw],
+		g_norm(length(c - s_img[sxy-1])) * s_strength_in[sxy-1],
+		g_norm(length(c - s_img[sxy+1])) * s_strength_in[sxy+1]
 	);
 
 	if (s_enemies[sxy] > OVER_PROWER_THRESHOLD) {
