@@ -81,7 +81,7 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		devices = self.clContext.get_info(cl.context_info.DEVICES)
 		queue = cl.CommandQueue(self.clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-		filename = os.path.join(os.path.dirname(__file__), 'clwindow.cl')
+		filename = os.path.join(os.path.dirname(__file__), 'filter.cl')
 		program = createProgram(self.clContext, devices, [], filename)
 
 		self.kernBlend_ui = cl.Kernel(program, 'blend_ui')
