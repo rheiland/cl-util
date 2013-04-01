@@ -128,7 +128,7 @@ if __name__ == "__main__":
 	import sys
 	from PyQt4 import QtCore, QtGui, QtOpenGL
 	from CLWindow import CLWindow
-	from CLCanvas import CLCanvas, Filter
+	from CLCanvas import CmLCanvas, Filter
 	from Brush import Brush
 
 	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")

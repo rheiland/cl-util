@@ -29,7 +29,7 @@ class Filter:
 		self.range = range
 		self.hues = hues
 
-class GLCanvas(QtOpenGL.QGLWidget):
+class CLCanvas(QtOpenGL.QGLWidget):
 	class Layer:
 		def __init__(self, clobj, shape=None, pos=None, enabled=True, opacity=1.0, datatype=None, filter=None):
 			self.clobj = clobj

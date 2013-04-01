@@ -17,7 +17,7 @@ cm = cl.mem_flags
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
 
-class GLWindow(QtGui.QMainWindow):
+class CLWindow(QtGui.QMainWindow):
 	class CenteredScrollArea(QtGui.QScrollArea):
 		def __init__(self, parent=None):
 			QtGui.QScrollArea.__init__(self, parent)
@@ -31,7 +31,7 @@ class GLWindow(QtGui.QMainWindow):
 			return True
 
 	def __init__(self, canvas):
-		super(GLWindow, self).__init__(None)
+		super(CLWindow, self).__init__(None)
 
 		self.slider = QtGui.QSlider(QtCore.Qt.Horizontal)
 		self.slider.setRange(0, 100)
