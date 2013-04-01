@@ -4,7 +4,6 @@ import sys
 
 from PyQt4 import QtCore, QtGui
 
-from CLCanvas import GLCanvas
 import pyopencl as cl
 import numpy as np
 
