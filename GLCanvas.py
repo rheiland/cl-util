@@ -24,14 +24,14 @@ szInt = np.dtype(np.int32).itemsize
 
 LWORKGROUP = (16, 16)
 
-class GLCanvas(QtOpenGL.QGLWidget):
-	class Filter:
-		def __init__(self, range, hues):
-			self.range = range
-			self.hues = hues
+class Filter:
+	def __init__(self, range, hues):
+		self.range = range
+		self.hues = hues
 
+class GLCanvas(QtOpenGL.QGLWidget):
 	class Layer:
-		def __init__(self, clobj, shape=None, pos=None, enabled=True, opacity=1.0, datatype=None, filter=filter):
+		def __init__(self, clobj, shape=None, pos=None, enabled=True, opacity=1.0, datatype=None, filter=None):
 			self.clobj = clobj
 			self.opacity = opacity if opacity != None else 1.0
 			self.shape = shape
@@ -73,8 +73,6 @@ class GLCanvas(QtOpenGL.QGLWidget):
 			glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA, self.width, self.height)
 			self.rbosCL[i] = cl.GLRenderBuffer(self.clContext, cm.READ_WRITE, int(self.rbos[i]))
 
-#		glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)
-
 		self.rboRead = 0
 		self.rboWrite = 1
 
@@ -92,7 +90,7 @@ class GLCanvas(QtOpenGL.QGLWidget):
 		self.kernFlip = cl.Kernel(program, 'flip')
 
 
-	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filter=filter):
+	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filter=None):
 		if type(clobj) == cl.Image:
 			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
 		elif type(clobj) == cl.Buffer:
@@ -192,28 +190,20 @@ class GLCanvas(QtOpenGL.QGLWidget):
 					]
 
 					self.kernBlend_ui(self.queue, gw, LWORKGROUP, *args)
-				elif type(layer.clobj) == cl.Buffer:
-					if layer.datatype == np.float32:
-						args += [
-							np.array([0, 1.0], np.float32),
-							np.array([0, 240], np.int32),
-							layer.clobj,
-							np.array(layer.shape, np.int32)
-						]
-						self.kernBuffer_f32(self.queue, gw, LWORKGROUP, *args)
-					elif layer.datatype == np.int32:
-						args += [
-							np.array([0, 10], np.int32),
-							np.array([0, 240], np.int32),
-							layer.clobj,
-							np.array(layer.shape, np.int32)
-						]
-						self.kernBuffer_i32(self.queue, gw, LWORKGROUP, *args)
+				else:
+					raise NotImplementedError("Simple blend with type {0} or datatype {1}".format(type(layer.clobj), layer.datatype))
 			else:
 				if type(layer.clobj) == cl.Image:
 					pass
 				elif type(layer.clobj) == cl.Buffer:
 					if layer.datatype == np.float32:
+						args += [
+							np.array(layer.filter.range, np.float32),
+							np.array(layer.filter.hues, np.int32),
+							layer.clobj,
+							np.array(layer.shape, np.int32)
+						]
+						self.kernBuffer_f32(self.queue, gw, LWORKGROUP, *args)
 						pass
 					elif layer.datatype == np.int32:
 						args += [
@@ -223,6 +213,8 @@ class GLCanvas(QtOpenGL.QGLWidget):
 							np.array(layer.shape, np.int32)
 						]
 						self.kernBuffer_i32(self.queue, gw, LWORKGROUP, *args)
+				else:
+					raise NotImplementedError("Filter with type {0} or datatype {1}".format(type(layer.clobj), layer.datatype))
 
 			self.queue.finish()
 
@@ -241,15 +233,12 @@ class GLCanvas(QtOpenGL.QGLWidget):
 
 		self.queue.finish()
 
-#		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, self.fbo)
-
 		#Prepare to render into the renderbuffer
 		glBindRenderbuffer(GL_RENDERBUFFER, self.rbos[self.rboWrite])
 		glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo)
 		glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, self.rbos[self.rboWrite])
 
 		#Set up to read from the renderbuffer and draw to window-system framebuffer
-#		glBindFramebuffer(GL_READ_FRAMEBUFFER, self.fbo);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 		glViewport(0, 0, self.viewport[0], self.viewport[1])
 

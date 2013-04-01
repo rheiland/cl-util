@@ -119,7 +119,7 @@ if __name__ == "__main__":
 	import sys
 	from PyQt4 import QtCore, QtGui, QtOpenGL
 	from GLWindow import GLWindow
-	from Colorize import Colorize
+	from GLCanvas import GLCanvas, Filter
 	from Brush import Brush
 
 	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
@@ -127,13 +127,12 @@ if __name__ == "__main__":
 		img = img.convert('RGBA')
 
 	app = QtGui.QApplication(sys.argv)
-	window = GLWindow(img.size)
-	clContext = window.clContext
-#	glContext = window.glContext
+	canvas = GLCanvas(img.size)
+	window = GLWindow(canvas)
+
+	clContext = canvas.clContext
 	devices = clContext.get_info(cl.context_info.DEVICES)
 	queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
-
-	colorize = Colorize(clContext, devices)
 
 	shapeNP = (img.size[1], img.size[0])
 	shapeNP = roundUp(shapeNP, GrowCut.lw)
@@ -141,30 +140,14 @@ if __name__ == "__main__":
 
 	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-
-#	vStrokes = window.addView(shapeNP, 'strokes', cm.WRITE_ONLY, True)
-#	hStrokes = np.random.randint(0, 10, int(np.prod(shapeCL))).astype(np.int32)
-#	cl.enqueue_copy(queue, dStrokes, hStrokes)
-
 	dImg = cl.Image(clContext,
 		cl.mem_flags.READ_ONLY,
-#		cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT32),
 		cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
 		shapeCL
 	)
-
 	cl.enqueue_copy(queue, dImg, hImg, origin=(0,0), region=shapeCL)
 
 	dStrokes = cl.Buffer(clContext, cm.READ_WRITE, szInt*int(np.prod(shapeCL)))
-
-
-#	window.setLayerMap('enemies', mapEnemies)
-#	window.setLayerMap('labels', mapLabels)
-#	window.setLayerMap('strength', mapStrength)
-#	window.setLayerOpacity('strokes', 0.0)
-#	window.setLayerOpacity('strength', 0.0)
-#	window.setLayerOpacity('labels', 0.7)
-#	window.setLayerOpacity('strokes', 1.0)
 
 	brushArgs = [
 #		'__write_only image2d_t strokes',
@@ -183,20 +166,7 @@ if __name__ == "__main__":
 
 	growCut = GrowCut(clContext, devices, dImg)
 
-	filter = window.canvas.Filter((0, 3), (0, 240))
-
-	layer = window.addLayer('stroke', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
-	layer = window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32)
-	layer = window.addLayer('image', dImg)
-	layer = window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32)
-	layer = window.addLayer('strength', growCut.dStrengthIn, shapeCL, datatype=np.float32)
-
 	label = 1
-
-	def intercept():
-		global label
-		label = not label
-		pass
 
 	iteration = 0
 	refresh = 1
@@ -239,6 +209,19 @@ if __name__ == "__main__":
 
 	timer = QtCore.QTimer()
 	timer.timeout.connect(next)
+
+	#setup window
+	filter = Filter((0, 3), (0, 240))
+	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
+	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filter=filter)
+
+	window.addLayer('image', dImg)
+
+	filter = Filter((0, 9),(0, 240))
+	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filter=filter)
+
+	filter = Filter((0, 1.0), (0, 240))
+	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filter=filter)
 
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.addButton('next', next)

@@ -6,7 +6,6 @@ from PyQt4 import QtCore, QtGui
 
 from GLCanvas import GLCanvas
 import pyopencl as cl
-from Colorize import Colorize
 import numpy as np
 
 try:
@@ -14,16 +13,11 @@ try:
 except ImportError:
 	raise ImportError("Error importing PyOpenGL")
 
-DEFAULT_WIDTH = 640
-DEFAULT_HEIGHT = 480
-
 cm = cl.mem_flags
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
 
 class GLWindow(QtGui.QMainWindow):
-	layers = []
-
 	class CenteredScrollArea(QtGui.QScrollArea):
 		def __init__(self, parent=None):
 			QtGui.QScrollArea.__init__(self, parent)
@@ -36,7 +30,7 @@ class GLWindow(QtGui.QMainWindow):
 
 			return True
 
-	def __init__(self, shape=(DEFAULT_WIDTH, DEFAULT_HEIGHT)):
+	def __init__(self, canvas):
 		super(GLWindow, self).__init__(None)
 
 		self.slider = QtGui.QSlider(QtCore.Qt.Horizontal)
@@ -54,9 +48,9 @@ class GLWindow(QtGui.QMainWindow):
 		self.layerList.installEventFilter(self)
 		self.layerList.itemClicked.connect(self.sigLayerClicked)
 		self.layerList.itemChanged.connect(self.sigCurrentLayerChanged)
+#		self.layerList.indexesMoved.connect(self.sigLayerIndexesMoved)
 
-		self.canvas = GLCanvas(shape)
-		self.canvas.layers = self.layers
+		self.canvas = canvas
 		self.canvas.mousePress = self.mousePress
 		self.canvas.mouseDrag = self.mouseDrag
 
@@ -89,24 +83,12 @@ class GLWindow(QtGui.QMainWindow):
 		splitter = QtGui.QSplitter()
 		splitter.addWidget(side)
 		splitter.addWidget(self.scrollarea)
-		splitter.setSizes([100, shape[0] + 25])
 
 		self.setCentralWidget(splitter)
 
-#		self.initGL()
-#		self.initCL()
-
-#		self.colorize = Colorize(self.clContext, self.clContext.devices)
-
-		self.clContext = self.canvas.clContext
-
 		self.installEventFilter(self)
-#		self.canvas.installEventFilter(self)
 
-		self.resize(100 + shape[0] + 24, shape[1] + 10)
-
-
-
+		splitter.setSizes([100, self.size().width()-100])
 
 	def addButton(self, name, action):
 		btn = QtGui.QPushButton(name)
@@ -150,32 +132,6 @@ class GLWindow(QtGui.QMainWindow):
 
 		self.layerList.addItem(item)
 
-		return layer
-
-	def addView2(self, shape, name=None, mem_flags=cm.READ_ONLY, buffer=False):
-		pos = (self.canvas.height-shape[0], self.canvas.width-shape[1])
-		view = GLCanvas.View(shape, pos, pbo=buffer)
-
-		self.layers.append(view)
-
-		item = QtGui.QListWidgetItem(name)
-		item.setText(name)
-		item.setFlags(	QtCore.Qt.ItemIsUserCheckable |
-						QtCore.Qt.ItemIsDragEnabled |
-						QtCore.Qt.ItemIsSelectable |
-						QtCore.Qt.ItemIsEnabled)
-		item.setCheckState(QtCore.Qt.Checked)
-		item.view = view
-		item.map = None
-
-		self.layerList.addItem(item)
-
-		if buffer:
-			return cl.GLBuffer(self.clContext, mem_flags, int(view.pbo))
-		else:
-			return cl.GLTexture(self.clContext, mem_flags, GL_TEXTURE_2D, 0, int(view.tex), 2)
-
-
 	def sigCurrentLayerChanged(self, item):
 		layer = item.layer
 
@@ -201,13 +157,16 @@ class GLWindow(QtGui.QMainWindow):
 		else:
 			self.slider.setValue(100*layer.opacity)
 
-	def sigLayerIndexesMoved(self):
-		del self.layers[:]
-		for i in range(self.layerList.count()):
-			layer = self.layerList.item(i).view
-			self.layers.append(layer)
-
-		self.updateCanvas()
+#	def sigLayerIndexesMoved(self):
+#		del self.canvas.layers[:]
+#
+#		for i in range(self.layerList.count()):
+#			layer = self.layerList.item(i).layer
+#			self.canvas.layers.append(layer)
+#
+#		print self.layerList
+#
+#		self.updateCanvas()
 
 	def updateCanvas(self):
 		self.canvas.repaint()
