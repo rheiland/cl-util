@@ -5,9 +5,6 @@ import numpy as np
 import os
 from clutil import roundUp, padArray2D, createProgram, formatForCLImage2D
 
-NEIGHBOURHOOD_VON_NEUMANN = 0
-NEIGHBOURHOOD_MOORE = 0
-
 LWORKGROUP = (16, 16)
 
 cm = cl.mem_flags
@@ -17,25 +14,37 @@ szInt = np.dtype(np.int32).itemsize
 class GrowCut():
 	lw = LWORKGROUP
 
-	def __init__(self, context, devices, img, neighbourhood=NEIGHBOURHOOD_VON_NEUMANN):
+	VON_NEUMANN = 0
+	MOORE = 1
+
+	def __init__(self, context, devices, img, neighbourhood=VON_NEUMANN, thresholdCanAttack=None, thresholdOverpowered=None):
 		self.context = context
 
+		if thresholdCanAttack == None:
+			thresholdCanAttack = 6
+		if thresholdOverpowered == None:
+			thresholdOverpowered = 6
+
 		options = [
-			'-D NEIGHBOURHOOD='+str(neighbourhood)
+			'-D CAN_ATTACK_THRESHOLD='+str(thresholdCanAttack),
+			'-D OVER_PROWER_THRESHOLD='+str(thresholdOverpowered)
 		]
 
 		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
 		program = createProgram(context, devices, options, filename)
 
-		self.kernEvolve = cl.Kernel(program, 'evolve')
 		self.kernCountEnemies = cl.Kernel(program, 'countEnemies')
+		if neighbourhood == GrowCut.VON_NEUMANN:
+			self.kernEvolve = cl.Kernel(program, 'evolveVonNeumann')
+		elif neighbourhood == GrowCut.MOORE:
+			self.kernEvolve = cl.Kernel(program, 'evolveMoore')
 
 		if type(img) == cl.GLBuffer:
-				raise ValueError("CL Buffer not implemented")
+				raise ValueError('CL Buffer')
 		elif type(img) == np.ndarray:
-			raise NotImplementedError("NP arrays not implemented")
+			raise NotImplementedError('NP arrays')
 		elif type(img) == cl.GLTexture:
-			raise NotImplementedError("GL Texture not implemented")
+			raise NotImplementedError('GL Texture')
 		elif type(img) == cl.Image:
 			self.dImg = img
 
@@ -164,7 +173,7 @@ if __name__ == "__main__":
 
 	brush = Brush(clContext, devices, brushArgs, brushCode)
 
-	growCut = GrowCut(clContext, devices, dImg)
+	growCut = GrowCut(clContext, devices, dImg, GrowCut.VON_NEUMANN, 4, 4)
 
 	label = 1
 

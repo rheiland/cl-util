@@ -6,23 +6,16 @@
 
 #define CL_TRUE_2_TRUE -1
 
-#define NEIGHBOURHOOD_VON_NEUMANN 0
-#define NEIGHBOURHOOD_MOORE 1
-
-#ifndef NEIGHBOURHOOD
-#define NEIGHBOURHOOD NEIGHBOURHOOD_VON_NEUMANN
-#endif
-
-//max(norm_f(c)) = sqrt(3*255*255) = 441.67295593006372
-//max(norm_ui(c)) = sqrt(3*1.0*1.0) = 1.7320508075688772
+//sqrt(3*255*255) = 441.67295593006372
+//sqrt(3*1.0*1.0) = 1.7320508075688772
 #define g_norm(x) (1.0f - (x/1.7320508075688772f))
 #define g(x) (1.0f - (x/441.67295593006372f))
 
 #define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, 0)
 #define rgba_f2_to_uint(c) (uint) (0xFF << 24 | ((int) (255*c.z)) << 16 | ((int) (255*c.y)) << 8 | (int) (255*c.x))
 
-#define CAN_ATTACK_THRESHOLD 6
-#define OVER_PROWER_THRESHOLD 6
+//#define CAN_ATTACK_THRESHOLD 6
+//#define OVER_PROWER_THRESHOLD 6
 
 float norm_length_ui(uint4 vector) {
 	float4 f = (float4) (((float) vector.x)/255, ((float) vector.y)/255, ((float) vector.z)/255, ((float) vector.w)/255);
@@ -71,7 +64,7 @@ float4 norm_rgba_ui4(uint4 rgba) {
 	return (float4) (((float) rgba.x)/255, ((float) rgba.y)/255, ((float) rgba.z)/255, ((float) rgba.w)/255);
 }
 
-__kernel void evolve(
+__kernel void evolveMoore(
 	__global int* labels_in,
 	__global int* labels_out,
 	__global float* strength_in,
