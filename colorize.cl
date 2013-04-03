@@ -1,3 +1,9 @@
+#define NORM 0.00392156862745098f
+#define uint42f4n(c) (float4) (NORM*c.x, NORM*c.y, NORM*c.z, NORM*c.w)
+#define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0x00FF0000) >> 24)
+#define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0x00FF0000) >> 24)
+
+
 float4 HSVtoRGB(float4 HSV)
 {
         float4 RGB = (float4)0;
@@ -22,92 +28,58 @@ float4 HSVtoRGB(float4 HSV)
         return (RGB);
 }
 
-uint pseudocolorf(float val, float m, float M, float hue1, float hue2) {
-	if (val < m)
-		return 0xFF000000;
-	if (val > M)
-		return 0xFFFFFFFF;
+float4 colorizef(float val, float2 range, int2 hues) {
+	float normalized = (val-range[0])/(range[1]-range[0]);
+	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
-	float4 hsv = (float4) ((hue1 + (val-m)/(M-m)*(hue2-hue1))/360, 1.0, 1.0, 0.0);
-	hsv = HSVtoRGB(hsv);
+	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
 
-	return (int) (255*hsv.z) << 16 | (int) (255*hsv.y) << 8 | (int) (255*hsv.x);
+	return HSVtoRGB(hsv);
 }
 
-uint pseudocolorf_sat(float val, float m, float M, float hue) {
-	if (val < m)
-		return 0xFF000000;
-	if (val > M)
-		return 0xFFFFFFFF;
+float4 colorizei(int val, int2 range, int2 hues) {
+	float normalized = (float) (val-range[0])/(range[1]-range[0]);
+	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
-	float4 hsv = (float4) (hue, 1.0, (val-m)/(M-m), 0.0);
-	hsv = HSVtoRGB(hsv);
+	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
 
-	return (int) (255*hsv.z) << 16 | (int) (255*hsv.y) << 8 | (int) (255*hsv.x);
+	return HSVtoRGB(hsv);
 }
 
-__kernel void colorizef(
-	__global float* in,
-	float m,
-	float M,
-	int gs,
-	__global uint* out,
-	float hue1,
-	float hue2
+
+
+__global kernel void colorize_i32(
+	int2 range,
+	int2 hues,
+	__global int* input,
+	int2 inputDim,
+	__write_only image2d_t output
 ) {
-	int gi = get_global_id(0);
+	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gi > gs-1)
+	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
 		return;
 
-	out[gi] = 0xFF000000 | pseudocolorf(in[gi], m, M, hue1, hue2);
+	int in = input[gxy.y*inputDim.x + gxy.x];
+	float4 out = colorizei(in, range, hues);
+
+	write_imagef(output, gxy, out);
 }
 
-__kernel void colorizei(
-	__global int* in,
-	int m,
-	int M,
-	int gs,
-	__global uint* out,
-	float hue1,
-	float hue2
+__global kernel void colorize_f32(
+	float2 range,
+	int2 hues,
+	__global float* input,
+	int2 inputDim,
+	__write_only image2d_t output
 ) {
-	int gi = get_global_id(0);
+	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gi > gs-1)
+	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
 		return;
 
-	out[gi] =  0xFF000000 | pseudocolorf((float) (in[gi]), (float) m, (float) M, hue1, hue2);
-}
+	float in = input[gxy.y*inputDim.x + gxy.x];
+	float4 out = colorizef(in, range, hues);
 
-__kernel void colorizef_sat(
-	__global float* in,
-	float m,
-	float M,
-	int gs,
-	__global uint* out,
-	float hue
-) {
-	int gi = get_global_id(0);
-
-	if (gi > gs-1)
-		return;
-
-	out[gi] = 0xFF000000 | pseudocolorf_sat(in[gi], m, M, hue);
-}
-
-__kernel void colorizei_sat(
-	__global int* in,
-	int m,
-	int M,
-	int gs,
-	__global uint* out,
-	float hue
-) {
-	int gi = get_global_id(0);
-
-	if (gi > gs-1)
-		return;
-
-	out[gi] = 0xFF000000 | pseudocolorf_sat(in[gi], m, M, hue);
+	write_imagef(output, gxy, out);
 }

@@ -133,3 +133,30 @@ def formatForCLImage2D(arr):
 	import numpy as np
 
 	return arr.view(np.int8).astype(np.float32).reshape(arr.shape+(-1,))
+
+def compareFormat(format1, format2):
+	if format1[0] != format2[0]:
+		return False
+
+	if format1[0] == cl.Image:
+		if format1[1].channel_order != format2[1].channel_order:
+			return False
+		if format1[1].channel_data_type != format2[1].channel_data_type:
+			return False
+
+	elif format1[0] == cl.Buffer:
+		if format1[1] != format2[1]:
+			return False
+
+	else:
+		raise NotImplementedError()
+
+	return True
+
+def isFormat(clobj, format):
+	if type(clobj) == cl.Buffer:
+		return compareFormat((cl.Buffer, (clobj.datatype)), format)
+	elif type(clobj) == cl.Image:
+		return compareFormat((cl.Image, clobj.format), format)
+
+	return False

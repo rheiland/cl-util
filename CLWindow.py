@@ -58,7 +58,7 @@ class CLWindow(QtGui.QMainWindow):
 		self.scrollarea.setWidget(self.canvas)
 		self.scrollarea.setAlignment(QtCore.Qt.AlignCenter)
 
-		layoutButtons = QtGui.QHBoxLayout()
+		layoutButtons = QtGui.QVBoxLayout()
 		self.widgetButtons = QtGui.QWidget()
 		self.widgetButtons.setLayout(layoutButtons)
 
@@ -117,8 +117,8 @@ class CLWindow(QtGui.QMainWindow):
 
 		self.updateCanvas()
 
-	def addLayer(self, name, clobj, shape=None, opacity=None, datatype=None, filter=None):
-		layer = self.canvas.addLayer(clobj, shape, opacity, datatype, filter=filter)
+	def addLayer(self, name, clobj, shape=None, opacity=None, datatype=None, filters=None):
+		layer = self.canvas.addLayer(clobj, shape, opacity, datatype, filters=filters)
 
 		item = QtGui.QListWidgetItem(name)
 		item.setText(name)

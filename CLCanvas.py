@@ -8,7 +8,7 @@ import numpy as np
 import pyopencl as cl
 from pyopencl.tools import get_gl_sharing_context_properties
 
-from clutil import roundUp, padArray2D, createProgram
+from clutil import roundUp, padArray2D, createProgram, compareFormat, isFormat
 
 try:
 	from OpenGL.GL import *
@@ -25,23 +25,35 @@ szInt = np.dtype(np.int32).itemsize
 LWORKGROUP = (16, 16)
 
 class Filter:
-	def __init__(self, range, hues):
-		self.range = range
-		self.hues = hues
+	def __init__(self, canvas):
+		pass
+
+class ChainedFilter(Filter):
+	def __init__(self, canvas):
+		Filter.__init__(self, canvas)
+
+	#must return output
+	def execute(self, input, output=None):
+		raise NotImplemented()
+
+	#class Transpose(Filter):
+	#	def __init__(self, context, queue, range, hues):
+	#		make extra buffer
+	#
+	#	def excute(self, input, output):
+	#		output becomes input for colorize
 
 class CLCanvas(QtOpenGL.QGLWidget):
 	class Layer:
-		def __init__(self, clobj, shape=None, pos=None, enabled=True, opacity=1.0, datatype=None, filter=None):
+		def __init__(self, clobj, pos=None, enabled=True, opacity=1.0, filters=None):
 			self.clobj = clobj
 			self.opacity = opacity if opacity != None else 1.0
-			self.shape = shape
 			self.enabled = enabled
 			self.pos = pos
-			self.datatype = datatype
-			self.filter = filter
+			self.filters = [] if filters == None else filters
 
 	def __init__(self, shape, parent=None):
-		super(GLCanvas, self).__init__(parent)
+		super(CLCanvas, self).__init__(parent)
 
 		self.w = 0
 
@@ -50,6 +62,7 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 		self.width = shape[0]
 		self.height = shape[1]
+		self.shape = shape
 
 		self.zoom = 1.0
 		self.transX = 0
@@ -71,33 +84,36 @@ class CLCanvas(QtOpenGL.QGLWidget):
 		for i in [0, 1]:
 			glBindRenderbuffer(GL_RENDERBUFFER, self.rbos[i])
 			glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA, self.width, self.height)
-			self.rbosCL[i] = cl.GLRenderBuffer(self.clContext, cm.READ_WRITE, int(self.rbos[i]))
+			self.rbosCL[i] = cl.GLRenderBuffer(self.context, cm.READ_WRITE, int(self.rbos[i]))
 
 		self.rboRead = 0
 		self.rboWrite = 1
 
 		self.layers = []
 
-		devices = self.clContext.get_info(cl.context_info.DEVICES)
-		queue = cl.CommandQueue(self.clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
+		self.devices = self.context.get_info(cl.context_info.DEVICES)
+		self.queue = cl.CommandQueue(self.context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-		filename = os.path.join(os.path.dirname(__file__), 'filter.cl')
-		program = createProgram(self.clContext, devices, [], filename)
+		filename = os.path.join(os.path.dirname(__file__), 'clcanvas.cl')
+		program = createProgram(self.context, self.devices, [], filename)
 
-		self.kernBlend_ui = cl.Kernel(program, 'blend_ui')
-		self.kernBuffer_f32 = cl.Kernel(program, 'buffer_f32')
-		self.kernBuffer_i32 = cl.Kernel(program, 'buffer_i32')
+		self.kernBlendImgf = cl.Kernel(program, 'blend_imgf')
+		self.kernBlendBufui = cl.Kernel(program, 'blend_bufui')
+		self.kernBlendImgui = cl.Kernel(program, 'blend_imgui')
+
 		self.kernFlip = cl.Kernel(program, 'flip')
 
-
-	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filter=None):
+	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filters=None):
 		if type(clobj) == cl.Image:
 			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
 		elif type(clobj) == cl.Buffer:
 			if shape == None:
 				raise ValueError('shape required with CL Buffer')
 
-		layer = GLCanvas.Layer(clobj, shape=shape, opacity=opacity, datatype=datatype, filter=filter)
+			clobj.shape = shape
+			clobj.datatype = datatype
+
+		layer = CLCanvas.Layer(clobj, opacity=opacity, filters=filters)
 		self.layers.append(layer)
 
 		return layer
@@ -106,15 +122,15 @@ class CLCanvas(QtOpenGL.QGLWidget):
 		platforms = cl.get_platforms()
 
 		if sys.platform == "darwin":
-			self.clContext = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
+			self.context = cl.Context(properties=get_gl_sharing_context_properties(), devices=[])
 		else:
 			try:
 				properties = [(cl.context_properties.PLATFORM, platforms)] + get_gl_sharing_context_properties()
-				self.clContext = cl.Context(properties)
+				self.context = cl.Context(properties)
 			except:
 				raise SystemError('Could not create OpenCL context')
 
-		self.queue = cl.CommandQueue(self.clContext)
+		self.queue = cl.CommandQueue(self.context)
 
 	def paintRenderBuffer(self):
 		pass
@@ -171,50 +187,62 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 		cl.enqueue_acquire_gl_objects(self.queue, self.rbosCL)
 
-		for layer in reversed(self.layers):
+		visible = []
+
+		for layer in self.layers:
 			if not layer.enabled or layer.opacity == 0:
 				continue
 
-			gw = roundUp(layer.shape, LWORKGROUP)
-			args = [
-				self.rbosCL[self.rboRead],
-				self.rbosCL[self.rboWrite],
-				cl.Sampler(self.clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
-				np.float32(layer.opacity)
-			]
+			visible.append(layer)
 
-			if layer.filter == None:
-				if type(layer.clobj) == cl.Image:
-					args += [
-						layer.clobj
-					]
+			if layer.opacity == 1.0:
+				break
 
-					self.kernBlend_ui(self.queue, gw, LWORKGROUP, *args)
-				else:
-					raise NotImplementedError("Simple blend with type {0} or datatype {1}".format(type(layer.clobj), layer.datatype))
-			else:
-				if type(layer.clobj) == cl.Image:
-					pass
-				elif type(layer.clobj) == cl.Buffer:
-					if layer.datatype == np.float32:
-						args += [
-							np.array(layer.filter.range, np.float32),
-							np.array(layer.filter.hues, np.int32),
-							layer.clobj,
-							np.array(layer.shape, np.int32)
-						]
-						self.kernBuffer_f32(self.queue, gw, LWORKGROUP, *args)
-						pass
-					elif layer.datatype == np.int32:
-						args += [
-							np.array(layer.filter.range, np.int32),
-							np.array(layer.filter.hues, np.int32),
-							layer.clobj,
-							np.array(layer.shape, np.int32)
-						]
-						self.kernBuffer_i32(self.queue, gw, LWORKGROUP, *args)
-				else:
-					raise NotImplementedError("Filter with type {0} or datatype {1}".format(type(layer.clobj), layer.datatype))
+		for layer in reversed(visible):
+
+			input = layer.clobj
+			for filter in layer.filters:
+				output = filter.execute(input)
+
+				input = output
+
+			if isFormat(input, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
+				self.args = [
+					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+					self.rbosCL[self.rboRead],
+					self.rbosCL[self.rboWrite],
+					np.float32(layer.opacity),
+					input
+				]
+
+				gw = roundUp(input.shape, LWORKGROUP)
+
+				self.kernBlendImgf(self.queue, gw, LWORKGROUP, *self.args)
+			if isFormat(input, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8))):
+				self.args = [
+					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+					self.rbosCL[self.rboRead],
+					self.rbosCL[self.rboWrite],
+					np.float32(layer.opacity),
+					input
+				]
+
+				gw = roundUp(input.shape, LWORKGROUP)
+
+				self.kernBlendImgui(self.queue, gw, LWORKGROUP, *self.args)
+			elif isFormat(input, (cl.Buffer, np.int32)):
+				self.args = [
+					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+					self.rbosCL[self.rboRead],
+					self.rbosCL[self.rboWrite],
+					np.float32(layer.opacity),
+					input,
+					np.array(input.shape, np.int32),
+				]
+
+				gw = roundUp(input.shape, LWORKGROUP)
+
+				self.kernBlendBufui(self.queue, gw, LWORKGROUP, *self.args)
 
 			self.queue.finish()
 
@@ -222,11 +250,11 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 		cl.enqueue_release_gl_objects(self.queue, self.rbosCL)
 
-		gw = roundUp(layer.shape, LWORKGROUP)
+		gw = roundUp(self.shape, LWORKGROUP)
 		args = [
 			self.rbosCL[self.rboRead],
 			self.rbosCL[self.rboWrite],
-			cl.Sampler(self.clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+			cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
 		]
 
 		self.kernFlip(self.queue, gw, LWORKGROUP, *args)

@@ -1,64 +1,74 @@
-import os
+from CLCanvas import ChainedFilter
+
+import os, sys
 import numpy as np
 import pyopencl as cl
-from clutil import roundUp, createProgram
+from clutil import roundUp, createProgram, compareFormat
 
-class Colorize:
-	def __init__(self, context, devices):
+LWORKGROUP = (16, 16)
+
+class Colorize(ChainedFilter):
+	def __init__(self, canvas, range, hues, formatIn, formatOut=None):
+		ChainedFilter.__init__(self, canvas)
+
+		self.range = range
+		self.hues = hues
+
+		self.formatOut = formatOut
+
+		options = []
+
 		filename = os.path.join(os.path.dirname(__file__), 'colorize.cl')
-		program = createProgram(context, devices, [], filename)
-		self.context = context
-		self.kernColorizef = cl.Kernel(program, 'colorizef')
-		self.kernColorizef_sat = cl.Kernel(program, 'colorizef_sat')
-		self.kernColorizei = cl.Kernel(program, 'colorizei')
+		program = createProgram(canvas.context, canvas.devices, options, filename)
 
-	def colorize(self, queue, arrIn, val=None, hue=None, typeIn=np.float32, dOut=None):
-		copy_back = False
+		if compareFormat(formatIn, (cl.Buffer, np.int32)) and \
+			compareFormat(formatOut, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
+			self.args = [
+				np.array(self.range, np.int32),
+				np.array(self.hues, np.int32),
+				None,
+				None,
+				None,
+			]
 
-		if type(arrIn) == cl.Buffer or type(arrIn) == cl.GLBuffer:
-			dIn = arrIn
-			type_size = np.dtype(np.float32).itemsize
-			size = arrIn.size/type_size
+			self.kern = cl.Kernel(program, 'colorize_i32')
+		elif compareFormat(formatIn, (cl.Buffer, np.float32)) and\
+		   compareFormat(formatOut, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
+			self.args = [
+				np.array(self.range, np.float32),
+				np.array(self.hues, np.int32),
+				None,
+				None,
+				None,
+			]
 
-			if val == None:
-				val = (0, 1000)
-
+			self.kern = cl.Kernel(program, 'colorize_f32')
 		else:
-			cm = cl.mem_flags
-			dIn = cl.Buffer(self.context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=arrIn)
-			size = arrIn.size
+			raise NotImplemented()
 
-			if val == None:
-				val = (arrIn.min(), arrIn.max())
+		self.canvas = canvas
 
-			typeIn = arrIn.dtype
-
-			if dOut == None:
-				copy_back = True
-
-		if hue == None:
-			hue = (0, 300)
-
-		if dOut == None:
-			dOut = dIn
-
-		lWorksize = (256, )
-		gWorksize = roundUp((size, ), lWorksize)
-
-		if typeIn == np.float32:
-			if type(hue) == int or type(hue) == float:
-				self.kernColorizef_sat(queue, gWorksize, lWorksize, dIn, np.float32(val[0]), np.float32(val[1]), np.int32(size), dOut, np.float32(hue)).wait()
-			if type(hue) == tuple and len(hue) == 2:
-				self.kernColorizef(queue, gWorksize, lWorksize, dIn,
-					np.float32(val[0]), np.float32(val[1]), np.int32(size), dOut, np.float32(hue[0]), np.float32(hue[1])).wait()
-		elif typeIn == np.uint32 or typeIn == np.int32:
-			if type(hue) == int or type(hue) == float:
-				self.kernColorizei_sat(queue, gWorksize, lWorksize, dIn, np.int32(val[0]), np.int32(val[1]), np.int32(size), dOut, np.float32(hue)).wait()
-			if type(hue) == tuple and len(hue) == 2:
-				self.kernColorizei(queue, gWorksize, lWorksize, dIn,
-					np.int32(val[0]), np.int32(val[1]), np.int32(size), dOut, np.float32(hue[0]), np.float32(hue[1])).wait()
+	def execute(self, input):
+		if self.formatOut == None:
+			output = input
+		elif self.formatOut[0] == cl.Image:
+			#check size of input does not exceed self.output
+			output = cl.Image(self.canvas.context,
+				cl.mem_flags.READ_WRITE,
+				self.formatOut[1],
+				input.shape
+			)
 		else:
-			raise  TypeError("Input array can only be np.float32, np.int32 or np.uint32")
+			raise NotImplemented()
 
-		if copy_back:
-			cl.enqueue_copy(queue, arrIn, dOut)
+		self.args[2:5] = [
+			input,
+			np.array(input.shape, np.int32),
+			output
+		]
+
+		gw = roundUp(input.shape, LWORKGROUP)
+
+		self.kern(self.canvas.queue, gw, LWORKGROUP, *self.args)
+
+		return output

@@ -128,18 +128,19 @@ if __name__ == "__main__":
 	import sys
 	from PyQt4 import QtCore, QtGui, QtOpenGL
 	from CLWindow import CLWindow
-	from CLCanvas import CmLCanvas, Filter
+	from CLCanvas import CLCanvas, Filter
 	from Brush import Brush
+	from Colorize import Colorize
 
 	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
 	if img.mode != 'RGBA':
 		img = img.convert('RGBA')
 
 	app = QtGui.QApplication(sys.argv)
-	canvas = GLCanvas(img.size)
-	window = GLWindow(canvas)
+	canvas = CLCanvas(img.size)
+	window = CLWindow(canvas)
 
-	clContext = canvas.clContext
+	clContext = canvas.context
 	devices = clContext.get_info(cl.context_info.DEVICES)
 	queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
@@ -220,17 +221,32 @@ if __name__ == "__main__":
 	timer.timeout.connect(next)
 
 	#setup window
-	filter = Filter((0, 3), (0, 240))
-	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
-	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filter=filter)
+	filters = [
+			Colorize(canvas, (0, 9), (0, 240),
+			formatIn=(cl.Buffer, np.int32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filters=filters)
+	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filters=filters)
 
 	window.addLayer('image', dImg)
 
-	filter = Filter((0, 9),(0, 240))
-	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filter=filter)
+	filters = [
+		Colorize(canvas, (0, 9), (0, 240),
+			formatIn=(cl.Buffer, np.int32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filters=filters)
 
-	filter = Filter((0, 1.0), (0, 240))
-	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filter=filter)
+	filters = [
+		Colorize(canvas, (0, 1.0), (240, 0),
+			formatIn=(cl.Buffer, np.float32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filters=filters)
 
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.addButton('next', next)
