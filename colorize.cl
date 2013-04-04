@@ -29,6 +29,11 @@ float4 HSVtoRGB(float4 HSV)
 }
 
 float4 colorizef(float val, float2 range, int2 hues) {
+	if (val < range[0])
+		return (float4) (0, 0, 0, 0);
+	else if (val > range[1])
+		return (float4) (1, 1, 1, 1);
+
 	float normalized = (val-range[0])/(range[1]-range[0]);
 	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
@@ -38,6 +43,11 @@ float4 colorizef(float val, float2 range, int2 hues) {
 }
 
 float4 colorizei(int val, int2 range, int2 hues) {
+	if (val < range[0])
+		return (float4) (0, 0, 0, 0);
+	else if (val > range[1])
+		return (float4) (1, 1, 1, 1);
+
 	float normalized = (float) (val-range[0])/(range[1]-range[0]);
 	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
