@@ -3,7 +3,7 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os
-from clutil import roundUp, padArray2D, createProgram
+from clutil import roundUp, padArray2D, createProgram, formatForCLImage2D
 
 LWORKGROUP = (16, 16)
 
@@ -220,19 +220,33 @@ if __name__ == "__main__":
 	timer = QtCore.QTimer()
 	timer.timeout.connect(next)
 
-	colorize = Colorize(canvas)
-
 	#setup window
-	filter = colorize.factory((cl.Buffer, np.int32), (0, 9))
-	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
-	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filter=filter)
+	filters = [
+			Colorize(canvas, (0, 9), (0, 240),
+			formatIn=(cl.Buffer, np.int32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filters=filters)
+	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filters=filters)
+
 	window.addLayer('image', dImg)
 
-	filter = colorize.factory((cl.Buffer, np.int32), (0, 4))
-	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filter=filter)
+	filters = [
+		Colorize(canvas, (0, 9), (0, 240),
+			formatIn=(cl.Buffer, np.int32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filters=filters)
 
-	filter = colorize.factory((cl.Buffer, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
-	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filter=filter)
+	filters = [
+		Colorize(canvas, (0, 1.0), (240, 0),
+			formatIn=(cl.Buffer, np.float32),
+			formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
+		)
+	]
+	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filters=filters)
 
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.addButton('next', next)
