@@ -1,6 +1,5 @@
 #define NORM 0.00392156862745098f
 #define uint42f4n(c) (float4) (NORM*c.x, NORM*c.y, NORM*c.z, NORM*c.w)
-
 #define RGBA_UI_TO_UI4(c) (uint4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0xFF000000) >> 24)
 
 __global kernel void blend_imgui(

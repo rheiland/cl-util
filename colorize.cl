@@ -1,8 +1,6 @@
 #define NORM 0.00392156862745098f
 #define uint42f4n(c) (float4) (NORM*c.x, NORM*c.y, NORM*c.z, NORM*c.w)
 #define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0x00FF0000) >> 24)
-#define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0x00FF0000) >> 24)
-
 
 float4 HSVtoRGB(float4 HSV)
 {
@@ -61,9 +59,12 @@ float4 colorizei(int val, int2 range, int2 hues) {
 __global kernel void colorize_i32(
 	int2 range,
 	int2 hues,
+	sampler_t sampler,
+	__read_only image2d_t rbo_read,
+	__write_only image2d_t rbo_write,
+	float opacity,
 	__global int* input,
-	int2 inputDim,
-	__write_only image2d_t output
+	int2 inputDim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
@@ -73,15 +74,20 @@ __global kernel void colorize_i32(
 	int in = input[gxy.y*inputDim.x + gxy.x];
 	float4 out = colorizei(in, range, hues);
 
-	write_imagef(output, gxy, out);
+	float4 read = read_imagef(rbo_read, sampler, gxy);
+
+	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }
 
 __global kernel void colorize_f32(
 	float2 range,
 	int2 hues,
+	sampler_t sampler,
+	__read_only image2d_t rbo_read,
+	__write_only image2d_t rbo_write,
+	float opacity,
 	__global float* input,
-	int2 inputDim,
-	__write_only image2d_t output
+	int2 inputDim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
@@ -91,5 +97,7 @@ __global kernel void colorize_f32(
 	float in = input[gxy.y*inputDim.x + gxy.x];
 	float4 out = colorizef(in, range, hues);
 
-	write_imagef(output, gxy, out);
+	float4 read = read_imagef(rbo_read, sampler, gxy);
+
+	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }
