@@ -37,7 +37,7 @@ __global kernel void blend_bufui(
 
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
-	int in = input[gxy.y*inputDim.x + gxy.x];
+	uint in = input[gxy.y*inputDim.x + gxy.x];
 	uint4 in4 = RGBA_UI_TO_UI4(in);
 	float4 out = uint42f4n(in4);
 

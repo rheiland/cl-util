@@ -12,20 +12,16 @@
 
 __kernel void init(
 	__global int* tiles,
-	int width,
-	int height,
+	int2 tilesDim,
 	int iteration
 ) {
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gxy = gy*gw + gx;
 
-	if (gx > width-1 || gy > height-1)
-		return
+	if (gx > tilesDim.x-1 || gy > tilesDim.y-1)
+		return;
 
-	tiles[gxy] = iteration;
+	tiles[gy*tilesDim.x + gx] = iteration;
 }
 
 __kernel void compact(

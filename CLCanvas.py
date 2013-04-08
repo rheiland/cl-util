@@ -8,7 +8,7 @@ import numpy as np
 import pyopencl as cl
 from pyopencl.tools import get_gl_sharing_context_properties
 
-from clutil import roundUp, padArray2D, createProgram, compareFormat, isFormat
+from clutil import roundUp, padArray2D, createProgram, compareFormat, isFormat, Buffer2D
 
 try:
 	from OpenGL.GL import *
@@ -88,15 +88,19 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 		self.kernFlip = cl.Kernel(program, 'flip')
 
-	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filter=None):
+		self.queue.finish()
+		glFinish()
+
+	def addLayer(self, clobj, shape=None, opacity=None, dtype=None, filter=None):
 		if type(clobj) == cl.Image:
 			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
 		elif type(clobj) == cl.Buffer:
-			if shape == None:
-				raise ValueError('shape required with CL Buffer')
+#			if shape == None:
+#				raise ValueError('shape required with CL Buffer')
 
-			clobj.shape = shape
-			clobj.datatype = datatype
+			if shape != None:
+				clobj.shape = shape
+			clobj.dtype = dtype
 
 		layer = CLCanvas.Layer(clobj, opacity=opacity, filter=filter)
 		self.layers.append(layer)
@@ -195,17 +199,17 @@ class CLCanvas(QtOpenGL.QGLWidget):
 			if layer.filter:
 				layer.filter.execute(self.queue, args)
 			else:
-				gw = roundUp(layer.clobj.shape, LWORKGROUP)
+				gw = layer.clobj.dim.tolist()
 
 				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
 					self.kernBlendImgf(self.queue, gw, LWORKGROUP, *args)
 				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8))):
 					self.kernBlendImgui(self.queue, gw, LWORKGROUP, *args)
-				elif isFormat(layer.clobj, (cl.Buffer, np.int32)):
-					args += [
-						np.array(layer.clobj.shape, np.int32),
-					]
+				elif isFormat(layer.clobj, (Buffer2D, np.uint32)):
+					args.append(layer.clobj.dim)
 					self.kernBlendBufui(self.queue, gw, LWORKGROUP, *args)
+				else:
+					raise  NotImplemented("Not yet implemented for type {0}".format(type(layer.clobj)))
 
 			self.queue.finish()
 

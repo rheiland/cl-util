@@ -144,7 +144,7 @@ def compareFormat(format1, format2):
 		if format1[1].channel_data_type != format2[1].channel_data_type:
 			return False
 
-	elif format1[0] == cl.Buffer:
+	elif format1[0] == Buffer2D:
 		if format1[1] != format2[1]:
 			return False
 
@@ -154,9 +154,62 @@ def compareFormat(format1, format2):
 	return True
 
 def isFormat(clobj, format):
-	if type(clobj) == cl.Buffer:
-		return compareFormat((cl.Buffer, (clobj.datatype)), format)
+	if type(clobj) == Buffer2D:
+		return compareFormat((Buffer2D, (clobj.dtype)), format)
 	elif type(clobj) == cl.Image:
 		return compareFormat((cl.Image, clobj.format), format)
 
 	return False
+
+#align on 32B segment for 8-bit data
+#align on 64B segment for 16-bit data
+#align on 128B segment for 32, 64 and 128-bit data
+def alignedDim(dim, dtype):
+	import numpy as np
+
+	if type(dim) == int:
+		pass
+	elif type(dim) == tuple and len(dim) == 2:
+		dim = dim[0]
+	else:
+		raise NotImplemented
+
+	if dtype == np.int32 or dtype == np.uint32:
+		return roundUp(dim, 32)
+	elif dtype == np.float32:
+		return roundUp(dim, 32)
+	else:
+		raise NotImplemented()
+
+class Buffer2D(cl.Buffer):
+	def __init__(self, context, flags, dim=None, dtype=None, hostbuf=None):
+		import numpy as np
+
+		if hostbuf != None:
+			dim = (hostbuf.shape[1], hostbuf.shape[0])
+			dtype = hostbuf.dtype
+		else:
+			if dim == None or dtype == None:
+				raise ValueError('Dimensions and datatype required')
+
+		pad = alignedDim(dim, dtype)
+
+		if hostbuf != None:
+			hostbuf = padArray2D(hostbuf, (hostbuf.shape[0], pad), 'constant')
+			cl.Buffer.__init__(self, context, flags, hostbuf=hostbuf)
+		else:
+			cl.Buffer.__init__(self, context, flags, size=np.dtype(dtype).itemsize*pad*dim[0])
+
+		self.dim = np.array(dim, np.int32)
+		self.dtype = dtype
+#		self.pad = np.array(pad, np.int32)
+
+	@staticmethod
+	def fromBuffer(buffer, dim, dtype):
+		import numpy as np
+
+		buffer.dim = np.array(dim, np.int32)
+		buffer.dtype = dtype
+#		buffer.pad = np.array(pad, np.int32)
+
+		return buffer

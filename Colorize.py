@@ -3,7 +3,7 @@ from CLCanvas import Filter as CLFilter
 import os, sys
 import numpy as np
 import pyopencl as cl
-from clutil import roundUp, createProgram, compareFormat, isFormat
+from clutil import roundUp, createProgram, compareFormat, isFormat, Buffer2D
 
 LWORKGROUP = (16, 16)
 
@@ -20,20 +20,21 @@ class Colorize():
 			self.setHues(hues)
 
 		def setRange(self, range):
-			if compareFormat(self.format, (cl.Buffer, np.int32)):
+			if compareFormat(self.format, (Buffer2D, np.int32)):
 				self.range = np.array(range, np.int32)
-			elif compareFormat(self.format, (cl.Buffer, np.float32)):
+			elif compareFormat(self.format, (Buffer2D, np.float32)):
 				self.range = np.array(range, np.float32)
 
 		def setHues(self, hues):
 			self.hues = np.array(hues, np.int32)
 
 		def execute(self, queue, args):
-			if self.format[0] == cl.Buffer:
-				shape = args[-1].shape
-				args += [np.array(shape, np.int32)]
+			if self.format[0] == Buffer2D:
+				buf = args[-1]
+				args.append(buf.dim)
+#				args.append(buf.pad)
 
-			gw = roundUp(shape, LWORKGROUP)
+			gw = buf.dim.tolist()
 
 			self.kern(queue, gw, LWORKGROUP, self.range, self.hues, *args)
 
@@ -45,9 +46,9 @@ class Colorize():
 		self.kernels_f32 = cl.Kernel(program, 'colorize_f32')
 
 	def factory(self, format, range, hues=None):
-		if compareFormat(format, (cl.Buffer, np.int32)):
+		if compareFormat(format, (Buffer2D, np.int32)):
 			kern = self.kernels_i32;
-		elif compareFormat(format, (cl.Buffer, np.float32)):
+		elif compareFormat(format, (Buffer2D, np.float32)):
 			kern = self.kernels_f32;
 
 		if hues == None:
