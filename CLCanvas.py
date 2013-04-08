@@ -91,16 +91,12 @@ class CLCanvas(QtOpenGL.QGLWidget):
 		self.queue.finish()
 		glFinish()
 
-	def addLayer(self, clobj, shape=None, opacity=None, dtype=None, filter=None):
-		if type(clobj) == cl.Image:
-			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
-		elif type(clobj) == cl.Buffer:
-#			if shape == None:
-#				raise ValueError('shape required with CL Buffer')
+	def addLayer(self, clobj, opacity=None, filter=None):
+		if opacity == None:
+			opacity = 1.0
 
-			if shape != None:
-				clobj.shape = shape
-			clobj.dtype = dtype
+		if type(clobj) == cl.Image:
+			clobj.dim = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
 
 		layer = CLCanvas.Layer(clobj, opacity=opacity, filter=filter)
 		self.layers.append(layer)
@@ -199,7 +195,7 @@ class CLCanvas(QtOpenGL.QGLWidget):
 			if layer.filter:
 				layer.filter.execute(self.queue, args)
 			else:
-				gw = layer.clobj.dim.tolist()
+				gw = layer.clobj.dim
 
 				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
 					self.kernBlendImgf(self.queue, gw, LWORKGROUP, *args)

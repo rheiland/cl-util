@@ -3,7 +3,7 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os
-from clutil import roundUp, padArray2D, createProgram
+from clutil import roundUp, padArray2D, createProgram, Buffer2D
 
 LWORKGROUP = (16, 16)
 
@@ -63,11 +63,11 @@ class GrowCut():
 
 		self.hHasConverged[0] = False
 
-		self.dEnemies = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hEnemiesIn)
-		self.dLabelsIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsIn)
-		self.dLabelsOut = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsOut)
-		self.dStrengthIn = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthIn)
-		self.dStrengthOut = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthOut)
+		self.dEnemies = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hEnemiesIn)
+		self.dLabelsIn = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsIn)
+		self.dLabelsOut = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsOut)
+		self.dStrengthIn = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthIn)
+		self.dStrengthOut = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthOut)
 		self.dHasConverged = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hHasConverged)
 
 		self.args = [
@@ -157,7 +157,7 @@ if __name__ == "__main__":
 	)
 	cl.enqueue_copy(queue, dImg, hImg, origin=(0,0), region=shapeCL)
 
-	dStrokes = cl.Buffer(clContext, cm.READ_WRITE, szInt*int(np.prod(shapeCL)))
+	dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.int32)
 
 	brushArgs = [
 #		'__write_only image2d_t strokes',
@@ -223,16 +223,16 @@ if __name__ == "__main__":
 	colorize = Colorize(canvas)
 
 	#setup window
-	filter = colorize.factory((cl.Buffer, np.int32), (0, 9))
-	window.addLayer('strokes', dStrokes, shapeCL, 0.25, np.int32, filter=filter)
-	window.addLayer('labels', growCut.dLabelsOut, shapeCL, 0.5, np.int32, filter=filter)
+	filter = colorize.factory((Buffer2D, np.int32), (0, 9))
+	window.addLayer('strokes', dStrokes, 0.25, filter=filter)
+	window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
 	window.addLayer('image', dImg)
 
-	filter = colorize.factory((cl.Buffer, np.int32), (0, 4))
-	window.addLayer('enemies', growCut.dEnemies, shapeCL, datatype=np.int32, filter=filter)
+	filter = colorize.factory((Buffer2D, np.int32), (0, 4))
+	window.addLayer('enemies', growCut.dEnemies, filter=filter)
 
-	filter = colorize.factory((cl.Buffer, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
-	window.addLayer('strength', growCut.dStrengthIn, shapeCL, 1.0, np.float32, filter=filter)
+	filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
+	window.addLayer('strength', growCut.dStrengthIn, 1.0, filter=filter)
 
 	window.addButton("start", functools.partial(timer.start, 0))
 	window.addButton('next', next)

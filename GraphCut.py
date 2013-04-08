@@ -206,33 +206,33 @@ transposefilter = TransposeColorize(canvas)
 colorize = Colorize(canvas)
 
 filter = colorize.factory((Buffer2D, np.float32), (0.001, 50), hues=Colorize.HUES.REVERSED)
-window.addLayer('excess', dExcess, datatype=np.float32, filter=filter)
+window.addLayer('excess', dExcess, filter=filter)
 
 filter = colorize.factory((Buffer2D, np.int32), (1, 144), hues=Colorize.HUES.REVERSED)
-window.addLayer('height', dHeight, datatype=np.int32, filter=filter)
-window.addLayer('height2/bfs', dHeight2, datatype=np.int32, filter=filter)
+window.addLayer('height', dHeight, filter=filter)
+window.addLayer('height2/bfs', dHeight2, filter=filter)
 
 filter = tilelistfilter.factory(tilelistBfs, hues=Colorize.HUES.REVERSED)
-window.addLayer('tiles Bfs', tilelistBfs.dTiles, datatype=np.int32, filter=filter)
+window.addLayer('tiles Bfs', tilelistBfs.dTiles, filter=filter)
 
 filter = tilelistfilter.factory(tilelistPush, hues=Colorize.HUES.REVERSED)
-window.addLayer('tiles Push', tilelistPush.dTiles, datatype=np.int32, filter=filter)
+window.addLayer('tiles Push', tilelistPush.dTiles, filter=filter)
 
 filter = tilelistfilter.factory(tilelistBorder, hues=Colorize.HUES.REVERSED)
-window.addLayer('tiles Border', tilelistBorder.dTiles, shape, datatype=np.int32, filter=filter)
+window.addLayer('tiles Border', tilelistBorder.dTiles, filter=filter)
 
 filter = tilelistfilter.factory(tilelistEdges, hues=Colorize.HUES.REVERSED)
-window.addLayer('tiles Edges', tilelistEdges.dTiles, shape, datatype=np.int32, filter=filter)
+window.addLayer('tiles Edges', tilelistEdges.dTiles, filter=filter)
 
 filter = colorize.factory((Buffer2D, np.float32), (0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
-window.addLayer('up', dUp, datatype=np.float32, filter=filter)
-window.addLayer('down', dDown, datatype=np.float32, filter=filter)
+window.addLayer('up', dUp, filter=filter)
+window.addLayer('down', dDown, filter=filter)
 
 filter = transposefilter.factory((0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
-window.addLayer('left', dLeft, datatype=np.float32, filter=filter)
-window.addLayer('right', dRight, datatype=np.float32, filter=filter)
+window.addLayer('left', dLeft, filter=filter)
+window.addLayer('right', dRight, filter=filter)
 
-window.addLayer('img', dImg, datatype=np.int32)
+window.addLayer('img', dImg)
 
 lWorksizeTiles16 = (16, 16)
 gWorksizeTiles16 = clutil.roundUp(shape, lWorksizeTiles16)
