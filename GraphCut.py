@@ -7,13 +7,14 @@ import pyopencl as cl
 import msclib, msclib.clutil as clutil
 from msclib import context, queue, device
 #from msclib import Colorize
-from StreamCompact import StreamCompact
-from clutil import createProgram, cl, roundUp, ceil_divi, padArray2D, compareFormat
+from StreamCompact import StreamCompact, TileList
+from clutil import createProgram, cl, roundUp, ceil_divi, padArray2D, Buffer2D
 import functools
 
 from PyQt4 import QtCore, QtGui, QtOpenGL
 from CLWindow import CLWindow
-from CLCanvas import CLCanvas, ChainedFilter
+from CLCanvas import CLCanvas
+from CLCanvas import Filter as CLFilter
 from Colorize import Colorize
 import sys
 import time
@@ -24,52 +25,6 @@ szChar = np.dtype(np.uint8).itemsize
 
 cm = cl.mem_flags
 
-class List():
-	def __init__(self, streamCompact):
-		self.hLength = np.empty((1,), np.int32)
-
-		self.dLength = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=self.hLength)
-		self.dList = streamCompact.listFactory()
-
-		self.isDirty = True
-
-	@property
-	def length(self):
-		if self.isDirty:
-			cl.enqueue_copy(queue, self.hLength, self.dLength).wait()
-			self.isDirty = False
-
-		return int(self.hLength[0])
-
-	def build(self, queue, tileFlag):
-		streamCompact.compact(queue, tileFlag.dFlags, self.dList, self.dLength)
-
-		self.isDirty = True
-
-class TileFlags():
-	def __init__(self, streamCompact):
-		self.iteration = 2 #0 and 1 reserved for True and False Flags
-
-		self.dTiles = streamCompact.flagFactory()
-		self.dFlags = streamCompact.flagFactory()
-
-		hTiles = np.empty((streamCompact.capacity, ), np.int32)
-		hTiles[:] = -1
-		cl.enqueue_copy(queue, self.dTiles, hTiles).wait()
-
-	def increment(self):
-		self.iteration += 1
-
-	def flag(self, queue, operator=None, operand=None):
-		if operator == None: operator = StreamCompact.OPERATOR_EQUAL
-		if operand == None:  operand = self.iteration
-
-		streamCompact.flag(queue, self.dTiles, self.dFlags, operator, operand)
-
-	def flagLogical(self, queue, dTiles2, operator1, operator2, operand1, operand2, logical):
-		streamCompact.flagLogical(queue, self.dTiles, dTiles2, self.dFlags, operator1, operator2, operand1, operand2, logical)
-
-
 img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
 if img.mode != 'RGBA':
 	img = img.convert('RGBA')
@@ -78,8 +33,6 @@ lWorksizeTiles16 = (16, 16)
 
 shapeNP = (img.size[1], img.size[0])
 hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, lWorksizeTiles16), 'edge')
-
-
 
 width = hImg.shape[1]
 height = hImg.shape[0]
@@ -110,32 +63,32 @@ context = canvas.context
 devices = context.get_info(cl.context_info.DEVICES)
 queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-#colorize = Colorize.Colorize(context, context.devices)
-
 dir = os.path.dirname(__file__)
-program = clutil.createProgram(context, devices, options, os.path.join(dir, 'graphcut.cl'))
-kernInitNeighbourhood = cl.Kernel(program, 'initNeighbourhood')
-kernInitGC = cl.Kernel(program, 'init_gc')
-kernPushDown = cl.Kernel(program, 'pushDown')
-#kernPushRight = cl.Kernel(program, 'pushRight')
-kernPushUp = cl.Kernel(program, 'pushUp')
-#kernPushLeft = cl.Kernel(program, 'pushLeft')
-kernRelabel = cl.Kernel(program, 'relabel')
-kernAddBorder = cl.Kernel(program, 'addBorder')
-kernViewBorder = cl.Kernel(program, 'viewBorder')
-kernViewActive = cl.Kernel(program, 'viewActive')
-kernBfs = cl.Kernel(program, 'bfs_intratile')
-kernBfsInterTile = cl.Kernel(program, 'bfs_intertile')
-kernInitBfs = cl.Kernel(program, 'init_bfs')
-kernBfsCompact = cl.Kernel(program, 'bfs_compact')
-#kernMapActiveTiles = cl.Kernel(program, 'mapActiveTiles')
-kernMapTileList = cl.Kernel(program, 'mapTileList')
-kernClear = cl.Kernel(program, 'clear')
-kernLoadTiles = cl.Kernel(program, 'load_tiles')
-kernInitPush = cl.Kernel(program, 'init_push')
+def build():
+	global kernInitNeighbourhood, kernInitGC, kernPushDown, kernPushUp, kernRelabel, kernAddBorder
+	global kernViewBorder, kernViewActive , kernBfs, kernBfsInterTile , kernInitBfs , kernClear, kernLoadTiles
+	global kernInitPush, kernPushRight, kernPushLeft, kernCheckCompletion
 
-kernPushRight = cl.Kernel(program, 'test')
-kernPushLeft = cl.Kernel(program, 'testL')
+	program = clutil.createProgram(context, devices, options, os.path.join(dir, 'graphcut.cl'))
+	kernInitNeighbourhood = cl.Kernel(program, 'initNeighbourhood')
+	kernInitGC = cl.Kernel(program, 'init_gc')
+	kernPushDown = cl.Kernel(program, 'pushDown')
+	kernPushUp = cl.Kernel(program, 'pushUp')
+	kernRelabel = cl.Kernel(program, 'relabel')
+	kernAddBorder = cl.Kernel(program, 'addBorder')
+	kernViewBorder = cl.Kernel(program, 'viewBorder')
+	kernViewActive = cl.Kernel(program, 'viewActive')
+	kernBfs = cl.Kernel(program, 'bfs_intratile')
+	kernBfsInterTile = cl.Kernel(program, 'bfs_intertile')
+	kernInitBfs = cl.Kernel(program, 'init_bfs')
+	kernClear = cl.Kernel(program, 'clear')
+	kernLoadTiles = cl.Kernel(program, 'load_tiles')
+	kernInitPush = cl.Kernel(program, 'init_push')
+	kernPushRight = cl.Kernel(program, 'test')
+	kernPushLeft = cl.Kernel(program, 'testL')
+	kernCheckCompletion = cl.Kernel(program, 'checkCompletion')
+
+build()
 
 wave_bredth = 32
 wave_length = 8
@@ -150,7 +103,6 @@ hSink = np.load('scoreBg.npy').reshape(shapeNp)
 hUp = np.empty(shapeNp, np.float32)
 hDown = np.empty(shapeNp, np.float32)
 hLeft = np.empty(shapeNpT, np.float32)
-hTranspose = np.empty(shapeNpT, np.float32)
 hRight = np.empty(shapeNpT, np.float32)
 hHeight = np.zeros(shapeNp, np.int32)
 hExcess = hSink - hSrc
@@ -163,23 +115,23 @@ hCanUp = np.empty((hUp.shape[0]/32, hUp.shape[1]) , np.uint32)
 hCanRight = np.empty((hRight.shape[0]/32, hRight.shape[1]) , np.uint32)
 hCanLeft = np.empty((hLeft.shape[0]/32, hLeft.shape[1]) , np.uint32)
 hNumIterations = np.empty((1,), np.int32)
+hIsCompleted = np.empty((1,), np.int32)
 
-dImg = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hImg)
-dUp = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hUp)
-dDown = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hDown)
-dLeft = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hLeft)
-dTranspose = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hTranspose)
-dRight = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hRight)
-dSrc = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hSrc)
-dSink = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hSink)
-dHeight = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hHeight)
-dExcess = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hExcess)
+dImg = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hImg)
+dUp = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hUp)
+dDown = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hDown)
+dLeft = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hLeft)
+dRight = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hRight)
+dSrc = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hSrc)
+dSink = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hSink)
+dHeight = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hHeight)
+dHeight2 = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hHeight2)
+dExcess = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hExcess)
 dBorder = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hBorder)
 dBorderUp = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hBorder)
 dBorderDown = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hBorder)
 dBorderLeft = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hBorder)
 dBorderRight = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hBorder)
-dHeight2 = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hHeight2)
 dNumActiveTiles = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hNumActiveTiles)
 dNumBorderTiles = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hNumActiveTiles)
 dCanUp = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hUp)
@@ -187,130 +139,100 @@ dCanDown = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hCanDown
 dCanLeft = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hCanLeft)
 dCanRight = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hCanRight)
 dNumIterations = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hNumIterations)
+dIsCompleted = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hIsCompleted)
 
 streamCompact = StreamCompact(context, [device], tilesW*tilesH)
 
-tilesPush = TileFlags(streamCompact)
-tilesBfs = TileFlags(streamCompact)
-tilesEdges = TileFlags(streamCompact)
-tilesBorder = TileFlags(streamCompact)
+shapeTiles = (tilesW, tilesH)
 
-listBorder = List(streamCompact)
-listPush = List(streamCompact)
+tilelistPush = TileList(context, [device], shapeTiles)
+tilelistBfs = TileList(context, [device], shapeTiles)
+tilelistEdges = TileList(context, [device], shapeTiles)
+tilelistBorder = TileList(context, [device], shapeTiles)
 
 hWeightMin = 0
 hWeightMax = LAMBDA * 1.0/EPSILON
 
+class TileListFilter():
+	class Filter(Colorize.Filter):
+		def __init__(self, kern, format, hues, tileflags):
+			Colorize.Filter.__init__(self, kern, format, (0, tileflags.iteration), hues)
 
-class TileListFilter(ChainedFilter):
-	def __init__(self, canvas, tileflags, size):
-		ChainedFilter.__init__(self, canvas)
+			self.tileflags = tileflags
 
+		def execute(self, queue, args):
+			args.append(args[-1].dim)
+
+			range = np.array([self.tileflags.iteration-1, self.tileflags.iteration], np.int32)
+
+			self.kern(queue, gWorksizeTiles16, lWorksizeTiles16, range, self.hues, *args)
+
+	def __init__(self, canvas):
 		filename = os.path.join(os.path.dirname(__file__), 'graphcut.cl')
 		program = createProgram(canvas.context, canvas.devices, options, filename)
 
-		self.output = cl.Buffer(context, cm.READ_WRITE, size=size)
+		self.kernel = cl.Kernel(program, 'tilelist')
 
-		self.kern = cl.Kernel(program, 'tilelist')
-		filename = os.path.join(os.path.dirname(__file__), 'colorize.cl')
-		program = createProgram(canvas.context, canvas.devices, options, filename)
+	def factory(self, tileflags, hues=None):
+		if hues == None:
+			hues = Colorize.HUES.STANDARD
 
-		self.args = [
-			None,
-			np.array(self.hues, np.int32),
-			None,
-			None,
-			None,
-			]
+		return TileListFilter.Filter(self.kernel, (Buffer2D, np.int32), hues, tileflags)
 
-		self.kern = cl.Kernel(program, 'colorize_i32')
+class TransposeColorize():
+	class Filter(Colorize.Filter):
+		def __init__(self, kern, format, range, hues):
+			Colorize.Filter.__init__(self, kern, format, range, hues)
 
+		def execute(self, queue, args):
+			args.append(args[-1].dim)
 
-		self.canvas = canvas
-		self.tileflags = tileflags
+			self.kern(queue, gWorksizeWaves, lWorksizeWaves, self.range, self.hues, *args)
 
-	def execute(self, input):
-		self.kern(self.canvas.queue, gWorksizeWaves, lWorksizeWaves, input)
-
-		self.argsC[0] = np.array([0, self.tileflags.iteration-1], np.int32)
-		self.argsC[2] = input
-		self.argsC[3] = np.array(input.shape, np.int32)
-		self.argsC[4] = input
-
-
-		self.output.shape = input.shape
-
-		return self.output
-class Transpose(ChainedFilter):
-	def __init__(self, canvas, size):
-		ChainedFilter.__init__(self, canvas)
-
+	def __init__(self, canvas):
 		filename = os.path.join(os.path.dirname(__file__), 'graphcut.cl')
 		program = createProgram(canvas.context, canvas.devices, options, filename)
 
-		self.output = cl.Buffer(context, cm.READ_WRITE, size=size)
+		self.kernel = cl.Kernel(program, 'tranpose')
 
-		self.kern = cl.Kernel(program, 'tranpose')
+	def factory(self, range, hues=None):
+		if hues == None:
+			hues = Colorize.HUES.STANDARD
 
-		self.canvas = canvas
+		return TransposeColorize.Filter(self.kernel, (Buffer2D, np.float32), range, hues)
 
-	def execute(self, input):
-		self.kern(self.canvas.queue, gWorksizeTiles16, lWorksizeTiles16, input, self.output)
+tilelistfilter = TileListFilter(canvas)
+transposefilter = TransposeColorize(canvas)
+colorize = Colorize(canvas)
 
-		self.output.shape = input.shape
+filter = colorize.factory((Buffer2D, np.float32), (0.001, 50), hues=Colorize.HUES.REVERSED)
+window.addLayer('excess', dExcess, datatype=np.float32, filter=filter)
 
-		return self.output
+filter = colorize.factory((Buffer2D, np.int32), (1, 144), hues=Colorize.HUES.REVERSED)
+window.addLayer('height', dHeight, datatype=np.int32, filter=filter)
+window.addLayer('height2/bfs', dHeight2, datatype=np.int32, filter=filter)
 
-filters = [
-	Colorize(canvas, (1, 72), (240, 0),
-		formatIn=(cl.Buffer, np.int32),
-		formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
-	)
-]
-window.addLayer('height', dHeight, shape, datatype=np.int32, filters=filters)
-window.addLayer('height2/bfs', dHeight2, shape, datatype=np.int32, filters=filters)
+filter = tilelistfilter.factory(tilelistBfs, hues=Colorize.HUES.REVERSED)
+window.addLayer('tiles Bfs', tilelistBfs.dTiles, datatype=np.int32, filter=filter)
 
-filters = [
-	Colorize(canvas, (0, hWeightMax), (240, 0),
-		formatIn=(cl.Buffer, np.float32),
-		formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
-	)
-]
-window.addLayer('up', dUp, shape, datatype=np.float32, filters=filters)
-window.addLayer('down', dDown, shape, datatype=np.float32, filters=filters)
+filter = tilelistfilter.factory(tilelistPush, hues=Colorize.HUES.REVERSED)
+window.addLayer('tiles Push', tilelistPush.dTiles, datatype=np.int32, filter=filter)
 
-filters = [
-	Transpose(canvas, dLeft.size),
-	Colorize(canvas, (0, hWeightMax), (240, 0),
-		formatIn=(cl.Buffer, np.float32),
-		formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
-	)
-]
-window.addLayer('left', dLeft, shape, datatype=np.float32, filters=filters)
-window.addLayer('right', dRight, shape, datatype=np.float32, filters=filters)
+filter = tilelistfilter.factory(tilelistBorder, hues=Colorize.HUES.REVERSED)
+window.addLayer('tiles Border', tilelistBorder.dTiles, shape, datatype=np.int32, filter=filter)
 
-filters = []
-window.addLayer('img', dImg, shape, datatype=np.int32, filters=filters)
+filter = tilelistfilter.factory(tilelistEdges, hues=Colorize.HUES.REVERSED)
+window.addLayer('tiles Edges', tilelistEdges.dTiles, shape, datatype=np.int32, filter=filter)
 
-filters = [
-	Colorize(canvas, (0.01, 48), (240, 0),
-		formatIn=(cl.Buffer, np.float32),
-		formatOut=(cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))
-	)
-]
-window.addLayer('excess', dExcess, shape, datatype=np.float32, filters=filters)
+filter = colorize.factory((Buffer2D, np.float32), (0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
+window.addLayer('up', dUp, datatype=np.float32, filter=filter)
+window.addLayer('down', dDown, datatype=np.float32, filter=filter)
 
-#vTilesBorderList = window.addView(shapeNp, 'Border List')
-#vTilesBorder = window.addView(shapeNp, 'TilesBorder')
-#vHeight = window.addViewNp(hHeight, 'height')
-#vTilesList = window.addView(shapeNp, 'TilesList')
-#vTilesBfs = window.addView(shapeNp, 'TilesBfs')
-#vBfs = window.addView(shapeNp, 'bfs')
-#vBorder = window.addView(shapeNp, 'Border')
-#vEdgesBfs = window.addView(shapeNp, 'EdgesBfs')
-#vTilesPush = window.addView(shapeNp, 'TilesPush')
-#vActive = window.addView(shapeNp, 'active')
+filter = transposefilter.factory((0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
+window.addLayer('left', dLeft, datatype=np.float32, filter=filter)
+window.addLayer('right', dRight, datatype=np.float32, filter=filter)
 
+window.addLayer('img', dImg, datatype=np.int32)
 
 lWorksizeTiles16 = (16, 16)
 gWorksizeTiles16 = clutil.roundUp(shape, lWorksizeTiles16)
@@ -324,7 +246,7 @@ gWorksizeSingleWave = (width, height/(waves_per_workgroup*wave_length))
 lWorksizeBorderAdd = (wave_bredth, )
 
 argsInit = [
-	listPush.dList,
+	tilelistPush.dList,
 	np.int32(tilesW),
 	np.int32(tilesH),
 	dImg,
@@ -336,7 +258,7 @@ argsInit = [
 ]
 
 argsLoadTiles = [
-	listBorder.dList,
+	tilelistBorder.dList,
 	np.int32(tilesW),
 	np.int32(tilesH),
 	dImg,
@@ -356,139 +278,61 @@ def constructor():
 	global build_iteration, bfs_iteration, iteration, border_iteration, init_bfs_iteration
 
 	iteration = 1
-	init_bfs_iteration = tilesBfs.iteration
+	init_bfs_iteration = tilelistBfs.iteration
 
 	hDown[:] = 0
 	hUp[:] = 0
 	hRight[:] = 0
 	hLeft[:] = 0
-#	hBorder[:] = 0
+	hHeight[:] = 0
+	hHeight2[:] = 0
 
 	cl.enqueue_copy(queue, dDown, hDown).wait()
 	cl.enqueue_copy(queue, dUp, hUp).wait()
 	cl.enqueue_copy(queue, dRight, hRight).wait()
 	cl.enqueue_copy(queue, dLeft, hLeft).wait()
-#	cl.enqueue_copy(queue, dBorder, hBorder).wait()
+	cl.enqueue_copy(queue, dHeight, hHeight).wait()
+	cl.enqueue_copy(queue, dHeight2, hHeight2).wait()
+
+	tilelistPush.reset()
+	tilelistBfs.reset()
+	tilelistEdges.reset()
+	tilelistBorder.reset()
 
 constructor()
 
 def init():
-	tilesPush.increment()
-
 	argsInitGC = [
 		dSrc,
 		dSink,
 		cl.LocalMemory(szInt*1),
-		tilesPush.dTiles,
-		np.int32(tilesPush.iteration),
+		tilelistPush.dTiles,
+		tilelistPush.dTiles.dim,
+		np.int32(tilelistPush.iteration),
 		dExcess
 	]
 	kernInitGC(queue, gWorksizeWaves, lWorksizeWaves, *argsInitGC).wait()
 
-	tilesPush.flag(queue)
-	listPush.build(queue, tilesPush)
-	gWorksizeList = (lWorksizeWaves[0]*listPush.length, lWorksizeWaves[1])
-
+	tilelistPush.flag()
+	gWorksizeList = (lWorksizeWaves[0]*tilelistPush.length, lWorksizeWaves[1])
 	kernInitNeighbourhood(queue, gWorksizeList, lWorksizeWaves, *argsInit).wait()
 
-	tilesPush.flag(queue)
-	listPush.build(queue, tilesPush)
-
-	init_bfs_iteration = tilesBfs.iteration
+	init_bfs_iteration = tilelistBfs.iteration
 	startBfs()
 
-	tilesBfs.flag(queue, streamCompact.OPERATOR_GT, init_bfs_iteration)
-	listPush.build(queue, tilesBfs)
+	tilelistBfs.flag(streamCompact.OPERATOR_GT, init_bfs_iteration)
 	activeListAfterBfs()
 
-	tilesPush.flag(queue)
-	listPush.build(queue, tilesPush)
+	tilelistPush.flag()
 
-	argsPushUpDown[11] = np.int32(tilesBorder.iteration+1)
-	argsPushLeftRight[13] = np.int32(tilesBorder.iteration+1)
+	argsPushUpDown[11] = np.int32(tilelistBorder.iteration+1)
+	argsPushLeftRight[13] = np.int32(tilelistBorder.iteration+1)
 
 	window.updateCanvas()
 
 
-
-weightRange = (0.001, hWeightMax)
-heightRange = (0, MAX_HEIGHT)
-excessRange = (0,001, hExcess.max())
-borderRange = (0.001, 48)
-reversedHue = (240, 0)
-
-def mapBorder():
-	kernViewBorder(queue, gWorksizeSingleWave, lWorksizeSingleWave, dBorder, vBorder, np.uint32(1)).wait()
-	colorize.colorize(queue, vBorder, val=borderRange, hue=reversedHue)
-
-def mapActive():
-	kernViewActive(queue, gWorksizeTiles16, lWorksizeTiles16, dHeight, dExcess, dDown, dRight, dUp, dLeft, vActive).wait()
-
-def mapTilesBfs():
-	kernMapActiveTiles(queue, gWorksizeTiles16, lWorksizeTiles16, tilesBfs.dTiles, vTilesBfs, np.int32(tilesBfs.iteration-1)).wait()
-	colorize.colorize(queue, vTilesBfs, val=(init_bfs_iteration-1, tilesBfs.iteration-1), hue=reversedHue, typeIn=np.int32)
-
-def mapTilesBorder():
-	kernMapActiveTiles(queue, gWorksizeTiles16, lWorksizeTiles16, tilesBorder.dTiles, vTilesBorder, np.int32(tilesBorder.iteration)).wait()
-	colorize.colorize(queue, vTilesBorder, val=(0, tilesBorder.iteration), hue=reversedHue, typeIn=np.int32)
-
-def mapEdgesBfs():
-	kernMapActiveTiles(queue, gWorksizeTiles16, lWorksizeTiles16, tilesEdges.dTiles, vEdgesBfs, np.int32(tilesBfs.iteration-1)).wait()
-	colorize.colorize(queue, vEdgesBfs, val=(0, tilesBfs.iteration-1), hue=reversedHue, typeIn=np.int32)
-
-def mapActiveTiles():
-	kernMapActiveTiles(queue, gWorksizeTiles16, lWorksizeTiles16, tilesPush.dTiles, vTilesPush, np.int32(tilesPush.iteration-1)).wait()
-	colorize.colorize(queue, vTilesPush, val=(0, tilesPush.iteration-1), hue=reversedHue, typeIn=np.int32)
-
-def mapTileList():
-	args = [
-		listPush.dList,
-		np.int32(tilesW),
-		np.int32(tilesPush.iteration-1),
-		vTilesList
-	]
-
-	if listPush.length == 0:
-		return
-
-	gWorksizeList = (lWorksizeWaves[0]*listPush.length, lWorksizeWaves[1])
-	kernClear(queue, gWorksizeList, lWorksizeWaves, vTilesList)
-	kernMapTileList(queue, gWorksizeList, lWorksizeWaves, *args).wait()
-
-def mapTileBorderList():
-	args = [
-		listBorder.dList,
-		np.int32(tilesW),
-		np.int32(tilesBorder.iteration-1),
-		vTilesBorderList
-	]
-
-	if listBorder.length == 0:
-		return
-
-	gWorksizeBorderList = (listBorder.length*wave_bredth, lWorksizeWaves[1])
-
-	kernClear(queue, gWorksizeWaves, lWorksizeWaves, vTilesBorderList)
-	kernMapTileList(queue, gWorksizeBorderList, lWorksizeWaves, *args).wait()
-
-#window.setMap(vDown, functools.partial(colorize.colorize, queue, dDown, val=weightRange, hue=reversedHue, dOut=vDown))
-#window.setMap(vUp, functools.partial(colorize.colorize, queue, dUp, val=weightRange, hue=reversedHue, dOut=vUp))
-#window.setMap(vLeft, functools.partial(map1, dLeft, vLeft))
-#window.setMap(vRight, functools.partial(map1, dRight, vRight))
-#window.setMap(vExcess, mapExcess)
-#window.setMap(vHeight, mapHeight)
-#window.setMap(vBfs, mapBfs)
-#window.setMap(vBorder, mapBorder)
-#window.setMap(vActive, mapActive)
-#window.setMap(vTilesList, mapTileList)
-#window.setMap(vTilesPush, mapActiveTiles)
-#window.setMap(vTilesBorder, mapTilesBorder)
-#window.setMap(vTilesBorderList, mapTileBorderList)
-#window.setMap(vTilesBfs, mapTilesBfs)
-#window.setMap(vEdgesBfs, mapEdgesBfs)
-
 argsInitBfs = [
-	listPush.dList,
+	tilelistPush.dList,
 	dExcess,
 	cl.LocalMemory(szInt*(wave_bredth)*(wave_length*waves_per_workgroup)),
 	dHeight,
@@ -501,20 +345,18 @@ argsInitBfs = [
 	cl.LocalMemory(szChar*lWorksizeWaves[0]*lWorksizeWaves[1]),
 	np.int32(tilesW),
 	np.int32(tilesH),
-	tilesBfs.dTiles,
+	tilelistBfs.dTiles,
 	None
 	]
 
-def initBfs():
-	pass
 
 def intratile_gaps():
-	gWorksizeBfs = (lWorksizeWaves[0]*int(listPush.length), lWorksizeWaves[1])
+	gWorksizeBfs = (lWorksizeWaves[0]*int(tilelistBfs.length), lWorksizeWaves[1])
 
-	tilesEdges.increment()
+	tilelistEdges.increment()
 
 	args = [
-		listPush.dList,
+		tilelistBfs.dList,
 		dHeight,
 		cl.LocalMemory(szInt*(wave_bredth+2)*(wave_length*waves_per_workgroup+2)),
 		dCanDown, dCanUp, dCanRight, dCanLeft,
@@ -522,87 +364,101 @@ def intratile_gaps():
 		np.int32(width),
 		cl.LocalMemory(szInt*1),
 		dNumIterations,
-		tilesEdges.dTiles,
-		np.int32(tilesEdges.iteration)
+		tilelistEdges.dTiles,
+		np.int32(tilelistEdges.iteration)
 	]
 
-	kernBfs(queue, gWorksizeBfs, lWorksizeWaves, *args)
+	kernBfs(queue, gWorksizeBfs, lWorksizeWaves, *args).wait()
 
 
 def intertile_gaps():
 	global bfs_iteration
 	lWorksizeBfs = (lWorksizeWaves[0], )
-	gWorksizeBfs = (lWorksizeWaves[0]*int(listPush.length), )
+	gWorksizeBfs = (lWorksizeWaves[0]*int(tilelistEdges.length), )
 
-	tilesBfs.increment()
+	tilelistBfs.increment()
 
 	args = [
-		listPush.dList,
+		tilelistEdges.dList,
 		dNumActiveTiles,
 		cl.LocalMemory(szInt*3),
 		dHeight,
 		dCanDown, dCanUp, dCanRight, dCanLeft,
 		np.int32(tilesW),
 		np.int32(width),
-		np.int32(tilesBfs.iteration),
-		tilesBfs.dTiles
+		np.int32(tilelistBfs.iteration),
+		tilelistBfs.dTiles
 	]
 
 	kernBfsInterTile(queue, gWorksizeBfs, lWorksizeBfs, *args).wait()
 
-
-def intercept():
-	cl.enqueue_copy(queue, hTilesBorder, tilesBorder.dTiles)
-	print hTilesBorder
-	pass
-
-
 def startBfs():
-	tilesBfs.increment()
-	argsInitBfs[20] = np.int32(tilesBfs.iteration)
+	tilelistBfs.increment()
+	argsInitBfs[20] = np.int32(tilelistBfs.iteration)
 
 	argsInitBfs[3] = dHeight
 
-	gWorksize = (lWorksizeWaves[0]*int(listPush.length), lWorksizeWaves[1])
-	kernInitBfs(queue, gWorksize, lWorksizeWaves, *argsInitBfs)
+	gWorksize = (lWorksizeWaves[0]*int(tilelistPush.length), lWorksizeWaves[1])
+	kernInitBfs(queue, gWorksize, lWorksizeWaves, *argsInitBfs).wait()
 
 	while True:
-		tilesBfs.flag(queue)
-		listPush.build(queue, tilesBfs)
+		tilelistBfs.flag()
 
-		if listPush.length > 0:
+		if tilelistBfs.length > 0:
 			intratile_gaps()
 		else:
 			break;
 
-		tilesEdges.flag(queue)
-		listPush.build(queue, tilesEdges)
+		tilelistEdges.flag()
 
-		if listPush.length > 0:
+		if tilelistEdges.length > 0:
 			intertile_gaps()
 		else:
 			break;
 
+def initBfs():
+	tilelistBfs.increment()
+	argsInitBfs[20] = np.int32(tilelistBfs.iteration)
+
+	argsInitBfs[3] = dHeight
+
+	gWorksize = (lWorksizeWaves[0]*int(tilelistPush.length), lWorksizeWaves[1])
+	kernInitBfs(queue, gWorksize, lWorksizeWaves, *argsInitBfs).wait()
+
+def bfs1():
+	tilelistBfs.flag()
+
+	if tilelistBfs.length > 0:
+		intratile_gaps()
+
+def bfs2():
+	tilelistEdges.flag()
+
+	if tilelistEdges.length > 0:
+		intertile_gaps()
+
+def intercept():
+	cl.enqueue_copy(queue, hTilesBorder, tilelistBorder.dTiles)
+	print hTilesBorder
+	pass
 
 def activeListAfterBfs():
-	gWorksizeBfs = (lWorksizeWaves[0]*int(listPush.length), lWorksizeWaves[1])
+	gWorksizeBfs = (lWorksizeWaves[0]*int(tilelistBfs.length), lWorksizeWaves[1])
 	lWorksizeBfs = lWorksizeWaves
 
-	tilesPush.increment()
+	tilelistPush.increment()
 
 	args = [
-		listPush.dList,
+		tilelistBfs.dList,
 		np.int32(tilesW),
 		dExcess,
 		dHeight2,
-#		dHeight,
 		cl.LocalMemory(szInt*1),
-		tilesPush.dTiles,
-		np.int32(tilesPush.iteration)
+		tilelistPush.dTiles,
+		np.int32(tilelistPush.iteration)
 	]
 
 	kernInitPush(queue, gWorksizeBfs, lWorksizeBfs, *args).wait()
-
 
 def relabel():
 	global dHeight, dHeight2
@@ -614,7 +470,7 @@ def relabel():
 	dHeight2 = tmpHeight
 
 argsPushUpDown = [
-	listPush.dList,
+	tilelistPush.dList,
 	np.int32(tilesW),
 	dDown,
 	dUp,
@@ -622,14 +478,14 @@ argsPushUpDown = [
 	dExcess,
 	dBorder,
 	cl.LocalMemory(szInt*1),
-	tilesBorder.dTiles,
+	tilelistBorder.dTiles,
 	None,
-	tilesPush.dTiles,
+	tilelistPush.dTiles,
 	None,
 ]
 
 argsPushLeftRight = [
-	listPush.dList,
+	tilelistPush.dList,
 	np.int32(tilesW),
 	dExcess,
 	cl.LocalMemory(4*waves_per_workgroup*wave_length*(wave_bredth+1)),
@@ -639,14 +495,14 @@ argsPushLeftRight = [
 	dLeft,
 	dBorder,
 	cl.LocalMemory(szInt*1),
-	tilesBorder.dTiles,
+	tilelistBorder.dTiles,
 	None,
-	tilesPush.dTiles,
+	tilelistPush.dTiles,
 	None,
 ]
 
 argsAddBorder = [
-	listBorder.dList,
+	tilelistBorder.dList,
 	np.int32(tilesW),
 	dBorder,
 	dExcess,
@@ -660,57 +516,57 @@ def push():
 	argsPushUpDown[4] = dHeight
 	argsPushLeftRight[4] = dHeight
 
-	gWorksizeList = (lWorksizeWaves[0]*listPush.length, lWorksizeWaves[1])
+	gWorksizeList = (lWorksizeWaves[0]*tilelistPush.length, lWorksizeWaves[1])
 
-	tilesBorder.increment()
-	argsPushUpDown[9] = np.int32(tilesBorder.iteration)
+	tilelistBorder.increment()
+	argsPushUpDown[9] = np.int32(tilelistBorder.iteration)
 	argsPushUpDown[6] = dBorderDown
 	kernPushDown(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
-	tilesBorder.flag(queue)
-	listBorder.build(queue, tilesBorder)
-	if listBorder.length:
+	tilelistBorder.flag()
+#	listBorder.build(queue, tilesBorder)
+	if tilelistBorder.length:
 		argsAddBorder[2] = dBorderDown
 		argsAddBorder[4] = np.int32(0)
-		gWorksizeBorder2 = (lWorksizeWaves[0]*listBorder.length, )
+		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 
-	tilesBorder.increment()
-	argsPushUpDown[9] = np.int32(tilesBorder.iteration)
+	tilelistBorder.increment()
+	argsPushUpDown[9] = np.int32(tilelistBorder.iteration)
 	argsPushUpDown[6] = dBorderUp
 	kernPushUp(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
-	tilesBorder.flag(queue)
-	listBorder.build(queue, tilesBorder)
-	if listBorder.length:
+	tilelistBorder.flag()
+#	listBorder.build(queue, tilesBorder)
+	if tilelistBorder.length:
 		argsAddBorder[2] = dBorderUp
 		argsAddBorder[4] = np.int32(1)
-		gWorksizeBorder2 = (lWorksizeWaves[0]*listBorder.length, )
+		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 
-	tilesBorder.increment()
+	tilelistBorder.increment()
 	argsPushLeftRight[8] = dBorderRight
-	argsPushLeftRight[11] = np.int32(tilesBorder.iteration)
+	argsPushLeftRight[11] = np.int32(tilelistBorder.iteration)
 	kernPushRight(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
-	tilesBorder.flag(queue)
-	listBorder.build(queue, tilesBorder)
-	if listBorder.length:
+	tilelistBorder.flag()
+#	listBorder.build(queue, tilesBorder)
+	if tilelistBorder.length:
 		argsAddBorder[2] = dBorderRight
 		argsAddBorder[4] = np.int32(2)
-		gWorksizeBorder2 = (lWorksizeWaves[0]*listBorder.length, )
+		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 
-	tilesBorder.increment()
+	tilelistBorder.increment()
 	argsPushLeftRight[8] = dBorderLeft
-	argsPushLeftRight[11] = np.int32(tilesBorder.iteration)
+	argsPushLeftRight[11] = np.int32(tilelistBorder.iteration)
 	kernPushLeft(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
-	tilesBorder.flag(queue)
-	listBorder.build(queue, tilesBorder)
-	if listBorder.length:
+	tilelistBorder.flag()
+#	listBorder.build(queue, tilesBorder)
+	if tilelistBorder.length:
 		argsAddBorder[2] = dBorderLeft
 		argsAddBorder[4] = np.int32(3)
-		gWorksizeBorder2 = (lWorksizeWaves[0]*listBorder.length, )
+		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 iteration = 1
@@ -738,13 +594,12 @@ def next():
 #			kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
 
 		#push kernels have marked tilesBorder with starting tilesBorder.increment + 5
-		tilesBorder.increment()
+		tilelistBorder.increment()
 
-		tilesBorder.flag(queue)
-		listBorder.build(queue, tilesBorder)
-		print listBorder.length
-		if listBorder.length > 0:
-			gWorksizeList = (lWorksizeWaves[0]*listBorder.length, lWorksizeWaves[1])
+		tilelistBorder.flag()
+		print tilelistBorder.length
+		if tilelistBorder.length > 0:
+			gWorksizeList = (lWorksizeWaves[0]*tilelistBorder.length, lWorksizeWaves[1])
 			kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
 
 
@@ -752,28 +607,29 @@ def next():
 
 
 		#build list of tiles with excess >= 0 and tiles that received overflow
-		tilesPush.flagLogical(queue, tilesBorder.dTiles,
+		tilelistPush.flagLogical(tilelistBorder.dTiles,
 			StreamCompact.OPERATOR_GTE, StreamCompact.OPERATOR_EQUAL,
-			tilesPush.iteration-1, tilesBorder.iteration,
+			tilelistPush.iteration-1, tilelistBorder.iteration,
 			StreamCompact.LOGICAL_OR
 		)
-		listPush.build(queue, tilesPush)
-		init_bfs_iteration = tilesBfs.iteration
+
+		init_bfs_iteration = tilelistBfs.iteration
 		startBfs()
 
-		tilesBfs.flag(queue, streamCompact.OPERATOR_GT, init_bfs_iteration)
-		listPush.build(queue, tilesBfs)
+#		if isCompleted():
+#			timer.stop()
+#			window.updateCanvas()
+
+		tilelistBfs.flag(streamCompact.OPERATOR_GT, init_bfs_iteration)
 		activeListAfterBfs()
+		tilelistPush.flag()
+		tilelistPush.increment() #one more increment for additional tiles flaged in activeListAfterBfs()
 
-		tilesPush.flag(queue)
-		listPush.build(queue, tilesPush)
-		tilesPush.increment() #one more increment for additional tiles flaged in activeListAfterBfs()
+		argsPushUpDown[11] = np.int32(tilelistBorder.iteration+1)
+		argsPushLeftRight[13] = np.int32(tilelistBorder.iteration+1)
 
-		argsPushUpDown[11] = np.int32(tilesBorder.iteration+1)
-		argsPushLeftRight[13] = np.int32(tilesBorder.iteration+1)
-
-		print 'active tiles:, ', listPush.length
-		if listPush.length == 0:
+		print 'active tiles:, ', tilelistPush.length
+		if tilelistPush.length == 0:
 			timer.stop()
 			window.updateCanvas()
 	else:
@@ -781,11 +637,30 @@ def next():
 
 	iteration += 1
 
-
 	window.updateCanvas()
 
 timer = QtCore.QTimer()
 timer.timeout.connect(next)
+
+def isCompleted():
+	cl.enqueue_copy(queue, dIsCompleted, np.int32(True))
+
+	args = [
+		dExcess,
+		dHeight,
+		cl.LocalMemory(szInt*1),
+		dIsCompleted
+	]
+	kernCheckCompletion(queue, gWorksizeWaves, lWorksizeWaves, *args)
+
+	cl.enqueue_copy(queue, hIsCompleted, dIsCompleted).wait()
+
+	return True if hIsCompleted[0] else False
+
+def reset():
+	build()
+	constructor()
+	init()
 
 window.addButton("push", push)
 window.addButton("relabel", relabel)
@@ -795,16 +670,16 @@ window.addButton("stop", timer.stop)
 window.addButton("intercept", intercept)
 window.addButton("init", init)
 window.addButton("initBfs", initBfs)
-window.addButton("startBfs", startBfs)
-window.addButton("bfs_intertile", intertile_gaps)
-window.addButton("bfs_intratile", intratile_gaps)
+window.addButton("bfs1", bfs1)
+window.addButton("bfs2", bfs2)
+window.addButton("reset", reset)
+
 
 #init()
 #for i in xrange(16):
 #	next()
 
 init()
-
 #window.show()
 #sys.exit(app.exec_())
 

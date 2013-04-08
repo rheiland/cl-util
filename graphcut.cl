@@ -16,11 +16,50 @@ float weight(uint c1, uint c2);
 #define EXCESS_LARGER_THAN_ZERO 2
 #define EXCESS_LESS_THAN_ZERO 3
 
+__kernel void checkCompletion(
+	__global float* excesses,
+	__global int* height,
+	__local int* tile_has_active_nodes, //tile has active nodes
+	__global int* isCompleted
+){
+	int gw = get_global_size(0);
+	int gh = get_global_size(1);
+	int gs = gw*gh;
+	int gx = get_global_id(0);
+	int gy = get_global_id(1);
+	int gxy = gy*gw + gx;
+
+	int lx = get_local_id(0);
+	int ly = get_local_id(0);
+
+	if (ly == 0 && lx == 0)
+		tile_has_active_nodes[0] = FALSE;
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	int ixy = WAVE_LENGTH*gy*gw + gx;
+
+	for (int i=0; i<WAVE_LENGTH; i++) {
+		if (excesses[ixy] > 0 && height[ixy] < MAX_HEIGHT)
+			tile_has_active_nodes[0] = TRUE;
+
+		ixy += gw;
+	}
+
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	if (lx == 0 && ly == 0) {
+		if (tile_has_active_nodes[0])
+			isCompleted[0] = FALSE;
+	}
+}
+
 __kernel void init_gc(
 	__global float* src,
 	__global float* sink,
 	__local int* tile_flags, //tile has nodes with excess >= 0
 	__global int* gc_tiles,
+	int2 gc_tilesPad,
 	int iteration,
 	__global float* excesses
 ) {
@@ -55,11 +94,9 @@ __kernel void init_gc(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (lx == 0 && ly == 0) {
-		int tw = get_num_groups(0);
-		int th = get_num_groups(1);
 		int tx = get_group_id(0);
 		int ty = get_group_id(1);
-		int txy = ty*tw + tx;
+		int txy = ty*gc_tilesPad.x + tx;
 
 		if (tile_flags[0]) {
 			gc_tiles[txy] = iteration;
@@ -171,47 +208,54 @@ __kernel void initNeighbourhood(
 	}
 }
 
-__kernel void viewTransposed(
-	__global float* n_link,
-	__global float* n_linkT
-) {
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
-
-	int lw = get_local_size(0);
-	int lh = get_local_size(1);
-	int lx = get_local_id(0);
-	int ly = get_local_id(1);
-
-	int wx = get_group_id(0);
-	int wy = get_group_id(1);
-
-	int iw = gw;
-	int ix = gx;
-	int iy = gy*WAVE_LENGTH;
-	int ixy = iy*iw + ix; 
-	
-	//transposed coordinates, threads are enumerated vertically within the tile
-	int iwT = gw;
-	int ixT = wx*WAVE_BREDTH + ly*WAVE_LENGTH;
-	int iyT = wy*WORKGROUP_LENGTH + lx; 
-	int ixyT = iyT*iwT + ixT;
-	
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		n_linkT[ixyT] = n_link[ixy];
-
-		ixy += iw;
-		ixyT += 1;
-	}
-}
-
 #define NUM_NEIGHBOURS 4
 #define NUM_ITERATIONS 5
 
+__kernel void addBorder(
+	__global int* tiles_list,
+	int tilesW,
+	__global float* border,
+	__global float* excess,
+	int direction
+)
+{
+	//get tile x,y offset
+	int txy = tiles_list[get_group_id(0)];
+	int tx = txy%tilesW;
+	int ty = txy/tilesW;
+
+	int lx = get_local_id(0);
+
+	int iw = 800;
+	int ix = tx*WAVE_BREDTH + lx;
+	int iy = ty;
+	int ixy = iy*iw + ix;
+
+	int ix2, iy2, ixy2;
+
+	switch(direction) {
+		case 0:
+			ix2 = ix;
+			iy2 = ty*WORKGROUP_LENGTH;
+		break;
+		case 1:
+			ix2 = ix;
+			iy2 = (ty+1)*WORKGROUP_LENGTH - 1;
+		break;
+		case 2:
+			ix2 = tx*WORKGROUP_LENGTH;
+			iy2 = ty*WAVE_BREDTH + lx;
+		break;
+		case 3: //flow received from tile to right
+			ix2 = (tx+1)*WORKGROUP_LENGTH - 1;
+			iy2 = ty*WAVE_BREDTH + lx;
+		break;
+	}
+
+	ixy2 = iy2*iw + ix2;
+
+	excess[ixy2] += border[ixy];
+}
 
 __kernel void testL(
 	__global int* tiles_list,
@@ -296,10 +340,10 @@ __kernel void testL(
 		}
 		else
 			flow = 0;
-		
+
 		left[ixy] -= flow;
 		excess_s[ixyS] = ef-flow;
-	
+
 		if (ly == 0 && i == WAVE_LENGTH-1)
 			right[ixy - 32 + 31*iw] += flow;	
 		else
@@ -335,7 +379,7 @@ __kernel void testL(
 	}
 
 	if (ly == 0 && flags[0] == TRUE) {
-		if (push_tiles[txy - 1] > -1) { //already loaded 
+		if (push_tiles[txy - 1] > -1) { //already loaded
 			border[ty*iw + ix - WAVE_BREDTH] = flow;
 			border_tiles[txy - 1] = iteration;
 		}
@@ -345,7 +389,7 @@ __kernel void testL(
 		}
 		else { //not loaded, has previous overflow
 			border[ty*iw + ix - WAVE_BREDTH] += flow;
-			//border_tiles[txy - 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
+//			border_tiles[txy - 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
 		}
 	}
 }
@@ -471,7 +515,7 @@ __kernel void test(
 	}
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		if (push_tiles[txy + 1] > -1) { //already loaded 
+		if (push_tiles[txy + 1] > -1) { //already loaded
 			border[ty*iw + ix + WAVE_BREDTH] = flow;
 			border_tiles[txy + 1] = iteration;
 		}
@@ -481,7 +525,7 @@ __kernel void test(
 		}
 		else { //not loaded, has previous overflow
 			border[ty*iw + ix + WAVE_BREDTH] += flow;
-			//border_tiles[txy + 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
+//			border_tiles[txy + 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
 		}
 	}
 }
@@ -554,7 +598,7 @@ __kernel void pushDown(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		if (push_tiles[txy + tilesW] > -1) { //already loaded 
+		if (push_tiles[txy + tilesW] > -1) { //already loaded
 			border[ty*iw + ix + iw] = flow;
 			border_tiles[txy + tilesW] = iteration;
 		}
@@ -564,7 +608,7 @@ __kernel void pushDown(
 		}
 		else { //not loaded, has previous overflow
 			border[ty*iw + ix + iw] += flow;
-			//border_tiles[txy + tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
+//			border_tiles[txy + tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
 		}
 	}
 }
@@ -635,7 +679,7 @@ __kernel void pushUp(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == 0 && flags[0] == TRUE) {
-		if (push_tiles[txy - tilesW] > -1) { //already loaded 
+		if (push_tiles[txy - tilesW] > -1) { //already loaded
 			border[ty*iw + ix - iw] = flow;
 			border_tiles[txy - tilesW] = iteration;
 		}
@@ -645,7 +689,7 @@ __kernel void pushUp(
 		}
 		else { //not loaded, has previous overflow
 			border[ty*iw + ix - iw] += flow;
-			//border_tiles[txy - tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
+//			border_tiles[txy - tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
 		}
 	}
 }
@@ -817,6 +861,8 @@ __kernel void init_bfs(
 			e1 = excess_s[ixyS];
 			e2 = excess[ixy2-iw];
 
+			// no need to check the reverse i.e e2 >= 0 and e1 < 0
+			// if e2 >= 0 was true the tile above would be processed
 			if ((can_ups_s[lx] & 1) && e1 >= 0 && e2 < 0) { // & 1 -> check first bit to see if possible to push up
 				bfs[ixy2] = 1; // dist of 1 away from sink
 				bfs_tiles[txy] = iteration;
@@ -1351,7 +1397,7 @@ __kernel void init_push(
 	barrier(CLK_LOCAL_MEM_FENCE);
 	
 	for (int i=0; i<WAVE_LENGTH; i++) {
-		if (excess[ixy] > 0 && bfs[ixy] < MAX_HEIGHT) {
+		if (excess[ixy] > 0 && bfs[ixy] < MAX_HEIGHT) { //looking for active nodes
 			tile_flags[0] = TRUE;
 		}
 
@@ -1361,7 +1407,7 @@ __kernel void init_push(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (lx == 0 && ly == 0) {
-		if (tile_flags[0]) //has active nodes
+		if (tile_flags[0]) //tile has active nodes
 			gc_tiles[txy] = iteration;
 		else
 			//tiles having no nodes with excess are needed when initializing the next round of bfs
@@ -1553,55 +1599,73 @@ __kernel void load_tiles(
 	}
 }
 
-__kernel void addBorder(
-	__global int* tiles_list,
-	int tilesW,
-	__global float* border,
-	__global float* excess,
-	int direction
-)
+#define NORM 0.00392156862745098f
+#define uint42f4n(c) (float4) (NORM*c.x, NORM*c.y, NORM*c.z, NORM*c.w)
+#define rgba2f4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, (c & 0x00FF0000) >> 24)
+
+float4 HSVtoRGB(float4 HSV)
 {
-	//get tile x,y offset
-	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+        float4 RGB = (float4)0;
+        if (HSV.z != 0)
+        {
+                float var_h = HSV.x * 6;
+                float var_i = (float) ((int) (var_h-0.000001));
+                float var_1 = HSV.z * (1.0 - HSV.y);
+                float var_2 = HSV.z * (1.0 - HSV.y * (var_h-var_i));
+                float var_3 = HSV.z * (1.0 - HSV.y * (1-(var_h-var_i)));
+                switch((int)(var_i))
+                {
+                        case 0: RGB = (float4)(HSV.z, var_3, var_1, HSV.w); break;
+                        case 1: RGB = (float4)(var_2, HSV.z, var_1, HSV.w); break;
+                        case 2: RGB = (float4)(var_1, HSV.z, var_3, HSV.w); break;
+                        case 3: RGB = (float4)(var_1, var_2, HSV.z, HSV.w); break;
+                        case 4: RGB = (float4)(HSV.z, var_1, var_2, HSV.w); break;
+                        default: RGB = (float4)(HSV.z, var_1, var_2, HSV.w); break;
+                }
+        }
+        RGB.w = HSV.w;
+        return (RGB);
+}
 
-	int lx = get_local_id(0);
-	
-	int iw = 800;
-	int ix = tx*WAVE_BREDTH + lx;
-	int iy = ty;
-	int ixy = iy*iw + ix;
+float4 colorizef(float val, float2 range, int2 hues) {
+	if (val < range[0])
+		return (float4) (0, 0, 0, 0);
+	else if (val > range[1])
+		return (float4) (1, 1, 1, 1);
 
-	int ix2, iy2, ixy2;
+	float normalized = (val-range[0])/(range[1]-range[0]);
+	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
-	switch(direction) {
-		case 0:
-			ix2 = tx*WAVE_BREDTH + lx;
-			iy2 = ty*WORKGROUP_LENGTH;
-		break;	
-		case 1:
-			ix2 = tx*WAVE_BREDTH + lx;
-			iy2 = (ty+1)*WORKGROUP_LENGTH - 1;
-		break;
-		case 2:
-			ix2 = tx*WORKGROUP_LENGTH;
-			iy2 = ty*WAVE_BREDTH + lx;
-		break;
-		case 3:
-			ix2 = (tx+1)*WORKGROUP_LENGTH - 1;
-			iy2 = ty*WAVE_BREDTH + lx;
-		break;
-	}
+	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
 
-	ixy2 = iy2*iw + ix2;
+	return HSVtoRGB(hsv);
+}
 
-	excess[ixy2] += border[ixy];
+float4 colorizei(int val, int2 range, int2 hues) {
+	if (val < range[0])
+		return (float4) (0, 0, 0, 0);
+	else if (val > range[1])
+		return (float4) (1, 1, 1, 1);
+
+	float normalized = (float) (val-range[0])/(range[1]-range[0]);
+	float hue = hues[0] + normalized*(hues[1]-hues[0]);
+
+	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
+
+	return HSVtoRGB(hsv);
 }
 
 __kernel void tranpose(
-	__global float* n_link,
-	__global float* n_linkT
+//	__global float* n_link,
+//	__global float* n_linkT
+	float2 range,
+	int2 hues,
+	sampler_t sampler,
+	__read_only image2d_t rbo_read,
+	__write_only image2d_t rbo_write,
+	float opacity,
+	__global float* input,
+	int2 inputDim
 ) {
 	int gw = get_global_size(0);
 	int gh = get_global_size(1);
@@ -1627,27 +1691,43 @@ __kernel void tranpose(
 	int iwT = gw;
 	int ixT = wx*WAVE_BREDTH + ly*WAVE_LENGTH;
 	int iyT = wy*WORKGROUP_LENGTH + lx;
-	int ixyT = iyT*iwT + ixT;
+//	int ixyT = iyT*iwT + ixT;
+	int2 ixyT = (int2) (ixT, iyT);
 
 	for (int i=0; i<WAVE_LENGTH; i++) {
-		n_linkT[ixyT] = n_link[ixy];
+//		n_linkT[ixyT] = n_link[ixy];
+		float in = input[ixy];
+		float4 out = colorizef(in, range, hues);
+
+		float4 read = read_imagef(rbo_read, sampler, ixyT);
+
+		write_imagef(rbo_write, ixyT, read + (out-read)*opacity);
 
 		ixy += iw;
-		ixyT += 1;
+//		ixyT += 1;
+		ixyT.x += 1;
 	}
 }
 
 __kernel void tilelist(
-	__global int* activeTiles,
-	__global uint* vActiveTiles
+	int2 range,
+	int2 hues,
+	sampler_t sampler,
+	__read_only image2d_t rbo_read,
+	__write_only image2d_t rbo_write,
+	float opacity,
+	__global int* input,
+	int2 inputDim
 ) {
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
+	int2 gxy = (int2) (gx, gy);
 
-	int bxy = (get_group_id(1)/BLOCKS_PER_TILE_DIM)*get_num_groups(0)/BLOCKS_PER_TILE_DIM + get_group_id(0)/BLOCKS_PER_TILE_DIM;
+	int bxy = (gy/TILE_SIZE)*inputDim.x + gx/TILE_SIZE;
+	int in = input[bxy];
+	float4 out = colorizei(in, range, hues);
 
-	vActiveTiles[gxy] = activeTiles[bxy];
+	float4 read = read_imagef(rbo_read, sampler, gxy);
+
+	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }

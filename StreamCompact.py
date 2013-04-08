@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pyopencl as cl
 import msclib.clutil as clutil
+from clutil import Buffer2D, alignedDim
 import sys
 import PrefixSum
 
@@ -11,6 +12,7 @@ szChar = np.dtype(np.uint8).itemsize
 cm = cl.mem_flags
 
 LEN_WORKGROUP = 256
+LWORKGROUP_2D = (16, 16)
 
 class StreamCompact():
 	OPERATOR_EQUAL = 0
@@ -116,6 +118,7 @@ class StreamCompact():
 class TileList():
 	def __init__(self, context, devices, shape):
 		self.hLength = np.empty((1,), np.int32)
+		self.shape = shape
 
 		self.streamCompact = StreamCompact(context, devices, shape[0]*shape[1])
 
@@ -126,30 +129,17 @@ class TileList():
 
 		self.isDirty = True
 
-		self.initIteration = -1
-		self.iteration = self.initIteration + 1
-
-		self.dTiles = self.streamCompact.flagFactory()
-		self.dFlags = self.streamCompact.flagFactory()
+		self.dTiles = Buffer2D.fromBuffer(self.streamCompact.flagFactory(), shape, shape)
+		self.dFlags = Buffer2D.fromBuffer(self.streamCompact.flagFactory(), shape, shape)
 
 		filename = os.path.join(os.path.dirname(__file__), 'streamcompact.cl')
 		program = clutil.createProgram(context, devices, [], filename)
 
-		kernInit = cl.Kernel(program, 'init')
+		self.kernInit = cl.Kernel(program, 'init')
 
-		shapeCL = (shape[1], shape[0])
+		self.initIteration = -1
 
-		lw = (16, 16)
-		gw = clutil.roundUp(shapeCL, lw)
-
-		args = [
-			self.dTiles,
-			np.int32(shape[1]),
-			np.int32(shape[0]),
-			np.int32(self.initIteration)
-		]
-
-		kernInit(self.queue, gw, lw, *args)
+		self.reset()
 
 	@property
 	def length(self):
@@ -162,18 +152,31 @@ class TileList():
 	def increment(self):
 		self.iteration += 1
 
-	def flag(self, queue, operator=None, operand=None):
+	def flag(self, operator=None, operand=None):
 		if operator == None: operator = StreamCompact.OPERATOR_EQUAL
 		if operand == None:  operand = self.iteration
 
-		self.streamCompact.flag(queue, self.dTiles, self.dFlags, operator, operand)
-		self.streamCompact.compact(queue, self.dFlags, self.dList, self.dLength)
+		self.streamCompact.flag(self.queue, self.dTiles, self.dFlags, operator, operand)
+		self.streamCompact.compact(self.queue, self.dFlags, self.dList, self.dLength)
 		self.isDirty = True
 
-	def flagLogical(self, queue, dTiles2, operator1, operator2, operand1, operand2, logical):
-		self.streamCompact.flagLogical(queue, self.dTiles, dTiles2, self.dFlags, operator1, operator2, operand1, operand2, logical)
-		self.streamCompact.compact(queue, self.dFlags, self.dList, self.dLength)
+	def flagLogical(self, dTiles2, operator1, operator2, operand1, operand2, logical):
+		self.streamCompact.flagLogical(self.queue, self.dTiles, dTiles2, self.dFlags, operator1, operator2, operand1, operand2, logical)
+		self.streamCompact.compact(self.queue, self.dFlags, self.dList, self.dLength)
 		self.isDirty = True
+
+	def reset(self):
+		self.iteration = self.initIteration + 1
+
+		args = [
+			self.dTiles,
+			self.dTiles.dim,
+			np.int32(self.initIteration)
+		]
+
+		gw = clutil.roundUp(self.shape, LWORKGROUP_2D)
+
+		self.kernInit(self.queue, gw, LWORKGROUP_2D, *args).wait()
 
 
 if __name__ == "__main__":
@@ -231,7 +234,7 @@ if __name__ == "__main__":
 
 	cl.enqueue_copy(clQueue, tileList.dTiles, hTiles)
 
-	tileList.flag(clQueue, StreamCompact.OPERATOR_GT, 15)
+	tileList.flag(StreamCompact.OPERATOR_GT, 15)
 
 	hList = np.empty((shape[0]*shape[1],), np.int32)
 	cl.enqueue_copy(clQueue, hList, tileList.dList)
