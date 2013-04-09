@@ -54,6 +54,8 @@ __kernel void checkCompletion(
 	}
 }
 
+
+//work straight from the excess image - this is just a place holder for now
 __kernel void init_gc(
 	__global float* src,
 	__global float* sink,
@@ -269,9 +271,7 @@ __kernel void testL(
 	__global float* border,
 	__local int* flags,
 	__global int* border_tiles,
-	int iteration,
-	__global int* push_tiles,
-	int start_iteration
+	int iteration
 )
 {
 	//get tile x,y offset
@@ -379,18 +379,8 @@ __kernel void testL(
 	}
 
 	if (ly == 0 && flags[0] == TRUE) {
-		if (push_tiles[txy - 1] > -1) { //already loaded
-			border[ty*iw + ix - WAVE_BREDTH] = flow;
-			border_tiles[txy - 1] = iteration;
-		}
-		else if (border_tiles[txy - 1] < start_iteration) { //no previous push either
-			border[ty*iw + ix - WAVE_BREDTH] = flow;
-			border_tiles[txy - 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
-		else { //not loaded, has previous overflow
-			border[ty*iw + ix - WAVE_BREDTH] += flow;
-//			border_tiles[txy - 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
+		border[ty*iw + ix - WAVE_BREDTH] = flow;
+		border_tiles[txy - 1] = iteration;
 	}
 }
 
@@ -407,9 +397,7 @@ __kernel void test(
 	__global float* border,
 	__local int* flags,
 	__global int* border_tiles,
-	int iteration,
-	__global int* push_tiles,
-	int start_iteration
+	int iteration
 )
 {
 	//get tile x,y offset
@@ -515,18 +503,8 @@ __kernel void test(
 	}
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		if (push_tiles[txy + 1] > -1) { //already loaded
-			border[ty*iw + ix + WAVE_BREDTH] = flow;
-			border_tiles[txy + 1] = iteration;
-		}
-		else if (border_tiles[txy + 1] < start_iteration) { //no previous push either
-			border[ty*iw + ix + WAVE_BREDTH] = flow;
-			border_tiles[txy + 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
-		else { //not loaded, has previous overflow
-			border[ty*iw + ix + WAVE_BREDTH] += flow;
-//			border_tiles[txy + 1] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
+		border[ty*iw + ix + WAVE_BREDTH] = flow;
+		border_tiles[txy + 1] = iteration;
 	}
 }
 
@@ -540,9 +518,7 @@ __kernel void pushDown(
 	__global float* border,
 	__local int* flags,
 	__global int* border_tiles,
-	int iteration,
-	__global int* push_tiles,
-	int start_iteration
+	int iteration
 )
 {
 	//get tile x,y offset
@@ -598,18 +574,8 @@ __kernel void pushDown(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		if (push_tiles[txy + tilesW] > -1) { //already loaded
-			border[ty*iw + ix + iw] = flow;
-			border_tiles[txy + tilesW] = iteration;
-		}
-		else if (border_tiles[txy + tilesW] < start_iteration) { //no previous push either
-			border[ty*iw + ix + iw] = flow;
-			border_tiles[txy + tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
-		else { //not loaded, has previous overflow
-			border[ty*iw + ix + iw] += flow;
-//			border_tiles[txy + tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
+		border[ty*iw + ix + iw] = flow;
+		border_tiles[txy + tilesW] = iteration;
 	}
 }
 
@@ -623,9 +589,7 @@ __kernel void pushUp(
 	__global float* border,
 	__local int* flags,
 	__global int* border_tiles,
-	int iteration,
-	__global int* push_tiles,
-	int start_iteration
+	int iteration
 )
 {
 	//get tile x,y offset
@@ -679,18 +643,8 @@ __kernel void pushUp(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == 0 && flags[0] == TRUE) {
-		if (push_tiles[txy - tilesW] > -1) { //already loaded
-			border[ty*iw + ix - iw] = flow;
-			border_tiles[txy - tilesW] = iteration;
-		}
-		else if (border_tiles[txy - tilesW] < start_iteration) { //no previous push either
-			border[ty*iw + ix - iw] = flow;
-			border_tiles[txy - tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
-		else { //not loaded, has previous overflow
-			border[ty*iw + ix - iw] += flow;
-//			border_tiles[txy - tilesW] = start_iteration + NUM_ITERATIONS*NUM_NEIGHBOURS;
-		}
+		border[ty*iw + ix - iw] = flow;
+		border_tiles[txy - tilesW] = iteration;
 	}
 }
 
@@ -1494,9 +1448,7 @@ __kernel void load_tiles(
 	__global float* left,
 	__global float* right,
 	__local uint* _l_img,
-	__global float* sink,
-	__global float* src,
-	__global float* excesses
+	__global int* tilesLoaded
 ) {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
@@ -1589,14 +1541,7 @@ __kernel void load_tiles(
 		right[_g_img_xy-_g_img_w] = term;
 	}
 
-	//load excess
-	_g_img_xy = _g_img_y*_g_img_w + _g_img_x;
-	
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		excesses[_g_img_xy] = sink[_g_img_xy] - src[_g_img_xy];
-
-		_g_img_xy += _g_img_w;
-	}
+	tilesLoaded[txy] = TRUE;
 }
 
 #define NORM 0.00392156862745098f

@@ -146,6 +146,7 @@ streamCompact = StreamCompact(context, [device], tilesW*tilesH)
 shapeTiles = (tilesW, tilesH)
 
 tilelistPush = TileList(context, [device], shapeTiles)
+tilelistLoad = TileList(context, [device], shapeTiles)
 tilelistBfs = TileList(context, [device], shapeTiles)
 tilelistEdges = TileList(context, [device], shapeTiles)
 tilelistBorder = TileList(context, [device], shapeTiles)
@@ -205,7 +206,7 @@ tilelistfilter = TileListFilter(canvas)
 transposefilter = TransposeColorize(canvas)
 colorize = Colorize(canvas)
 
-filter = colorize.factory((Buffer2D, np.float32), (0.001, 50), hues=Colorize.HUES.REVERSED)
+filter = colorize.factory((Buffer2D, np.float32), (-50, 50), hues=Colorize.HUES.REVERSED)
 window.addLayer('excess', dExcess, filter=filter)
 
 filter = colorize.factory((Buffer2D, np.int32), (1, 144), hues=Colorize.HUES.REVERSED)
@@ -245,20 +246,8 @@ gWorksizeSingleWave = (width, height/(waves_per_workgroup*wave_length))
 
 lWorksizeBorderAdd = (wave_bredth, )
 
-argsInit = [
-	tilelistPush.dList,
-	np.int32(tilesW),
-	np.int32(tilesH),
-	dImg,
-	dUp,
-	dDown,
-	dLeft,
-	dRight,
-	cl.LocalMemory(szInt*(waves_per_workgroup*wave_length+2)*(wave_bredth+2))
-]
-
 argsLoadTiles = [
-	tilelistBorder.dList,
+	None, #dList
 	np.int32(tilesW),
 	np.int32(tilesH),
 	dImg,
@@ -267,18 +256,13 @@ argsLoadTiles = [
 	dLeft,
 	dRight,
 	cl.LocalMemory(szInt*(waves_per_workgroup*wave_length+2)*(wave_bredth+2)),
-	dSink,
-	dSrc,
-	dExcess
+	tilelistLoad.dTiles
 ]
 
-init_bfs_iteration = None
-
 def constructor():
-	global build_iteration, bfs_iteration, iteration, border_iteration, init_bfs_iteration
+	global iteration
 
 	iteration = 1
-	init_bfs_iteration = tilelistBfs.iteration
 
 	hDown[:] = 0
 	hUp[:] = 0
@@ -295,6 +279,7 @@ def constructor():
 	cl.enqueue_copy(queue, dHeight2, hHeight2).wait()
 
 	tilelistPush.reset()
+	tilelistLoad.reset()
 	tilelistBfs.reset()
 	tilelistEdges.reset()
 	tilelistBorder.reset()
@@ -302,37 +287,39 @@ def constructor():
 constructor()
 
 def init():
+	#in the future only accept with dExcess and build tile list from there
+	#hit the ground running with dExcess already calculated everywhere
 	argsInitGC = [
 		dSrc,
 		dSink,
 		cl.LocalMemory(szInt*1),
-		tilelistPush.dTiles,
-		tilelistPush.dTiles.dim,
-		np.int32(tilelistPush.iteration),
+		tilelistLoad.dTiles,
+		tilelistLoad.dTiles.dim,
+		np.int32(tilelistLoad.iteration),
 		dExcess
 	]
+
 	kernInitGC(queue, gWorksizeWaves, lWorksizeWaves, *argsInitGC).wait()
 
-	tilelistPush.flag()
-	gWorksizeList = (lWorksizeWaves[0]*tilelistPush.length, lWorksizeWaves[1])
-	kernInitNeighbourhood(queue, gWorksizeList, lWorksizeWaves, *argsInit).wait()
+	tilelistLoad.flag()
+	gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
+#	kernInitNeighbourhood(queue, gWorksizeList, lWorksizeWaves, *argsInit).wait()
+	argsLoadTiles[0] = tilelistLoad.dList
+	kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
 
 	init_bfs_iteration = tilelistBfs.iteration
-	startBfs()
+	startBfs(tilelistLoad.dList, tilelistLoad.length)
 
 	tilelistBfs.flag(streamCompact.OPERATOR_GT, init_bfs_iteration)
 	activeListAfterBfs()
 
 	tilelistPush.flag()
 
-	argsPushUpDown[11] = np.int32(tilelistBorder.iteration+1)
-	argsPushLeftRight[13] = np.int32(tilelistBorder.iteration+1)
-
 	window.updateCanvas()
 
 
 argsInitBfs = [
-	tilelistPush.dList,
+	None, #dList
 	dExcess,
 	cl.LocalMemory(szInt*(wave_bredth)*(wave_length*waves_per_workgroup)),
 	dHeight,
@@ -372,7 +359,6 @@ def intratile_gaps():
 
 
 def intertile_gaps():
-	global bfs_iteration
 	lWorksizeBfs = (lWorksizeWaves[0], )
 	gWorksizeBfs = (lWorksizeWaves[0]*int(tilelistEdges.length), )
 
@@ -392,13 +378,15 @@ def intertile_gaps():
 
 	kernBfsInterTile(queue, gWorksizeBfs, lWorksizeBfs, *args).wait()
 
-def startBfs():
+def startBfs(dList, length):
 	tilelistBfs.increment()
 	argsInitBfs[20] = np.int32(tilelistBfs.iteration)
 
 	argsInitBfs[3] = dHeight
 
-	gWorksize = (lWorksizeWaves[0]*int(tilelistPush.length), lWorksizeWaves[1])
+	argsInitBfs[0] =  dList
+
+	gWorksize = (lWorksizeWaves[0]*int(length), lWorksizeWaves[1])
 	kernInitBfs(queue, gWorksize, lWorksizeWaves, *argsInitBfs).wait()
 
 	while True:
@@ -479,9 +467,7 @@ argsPushUpDown = [
 	dBorder,
 	cl.LocalMemory(szInt*1),
 	tilelistBorder.dTiles,
-	None,
-	tilelistPush.dTiles,
-	None,
+	None
 ]
 
 argsPushLeftRight = [
@@ -496,9 +482,7 @@ argsPushLeftRight = [
 	dBorder,
 	cl.LocalMemory(szInt*1),
 	tilelistBorder.dTiles,
-	None,
-	tilelistPush.dTiles,
-	None,
+	None
 ]
 
 argsAddBorder = [
@@ -520,12 +504,9 @@ def push():
 
 	tilelistBorder.increment()
 	argsPushUpDown[9] = np.int32(tilelistBorder.iteration)
-	argsPushUpDown[6] = dBorderDown
 	kernPushDown(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
 	tilelistBorder.flag()
-#	listBorder.build(queue, tilesBorder)
 	if tilelistBorder.length:
-		argsAddBorder[2] = dBorderDown
 		argsAddBorder[4] = np.int32(0)
 		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
@@ -533,88 +514,63 @@ def push():
 
 	tilelistBorder.increment()
 	argsPushUpDown[9] = np.int32(tilelistBorder.iteration)
-	argsPushUpDown[6] = dBorderUp
 	kernPushUp(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
 	tilelistBorder.flag()
-#	listBorder.build(queue, tilesBorder)
 	if tilelistBorder.length:
-		argsAddBorder[2] = dBorderUp
 		argsAddBorder[4] = np.int32(1)
 		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
-
 	tilelistBorder.increment()
-	argsPushLeftRight[8] = dBorderRight
 	argsPushLeftRight[11] = np.int32(tilelistBorder.iteration)
 	kernPushRight(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
 	tilelistBorder.flag()
-#	listBorder.build(queue, tilesBorder)
 	if tilelistBorder.length:
-		argsAddBorder[2] = dBorderRight
 		argsAddBorder[4] = np.int32(2)
 		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 
 	tilelistBorder.increment()
-	argsPushLeftRight[8] = dBorderLeft
 	argsPushLeftRight[11] = np.int32(tilelistBorder.iteration)
 	kernPushLeft(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
 	tilelistBorder.flag()
-#	listBorder.build(queue, tilesBorder)
 	if tilelistBorder.length:
-		argsAddBorder[2] = dBorderLeft
 		argsAddBorder[4] = np.int32(3)
 		gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
 		kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
 
 iteration = 1
-globalbfs = 5
-
-hTilesBorder = np.empty((tilesH, tilesW) , np.int32)
-hTilesPush = np.empty((tilesH, tilesW) , np.int32)
+globalbfs = 3
 
 def next():
 	print 'iteration:', iteration
-	global iteration, build_iteration, gWorksizeList, init_bfs_iteration
+	global iteration, gWorksizeList
 
 	push()
 
 	if iteration%globalbfs == 0:
-		#load additional tiles dynamically if needed
-#		tilesBorder.flagLogical(queue, tilesPush.dTiles,
-#								StreamCompact.OPERATOR_GTE, StreamCompact.OPERATOR_EQUAL,
-#								(tilesBorder.iteration-(globalbfs*4)), -1,
-#								StreamCompact.LOGICAL_AND
-#		)
-#		listBorder.build(queue, tilesBorder)
-#		if listBorder.length > 0:
-#			gWorksizeList = (lWorksizeWaves[0]*listBorder.length, lWorksizeWaves[1])
-#			kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
+		tilelistLoad.flagLogical(tilelistBorder.dTiles,
+			StreamCompact.OPERATOR_EQUAL, -1,
+			StreamCompact.OPERATOR_GT, tilelistBorder.iteration-globalbfs*4,
+			StreamCompact.LOGICAL_AND
+		)
 
-		#push kernels have marked tilesBorder with starting tilesBorder.increment + 5
-		tilelistBorder.increment()
-
-		tilelistBorder.flag()
-		print tilelistBorder.length
-		if tilelistBorder.length > 0:
-			gWorksizeList = (lWorksizeWaves[0]*tilelistBorder.length, lWorksizeWaves[1])
-			kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
-
-
-
-
+		if tilelistLoad.length > 0:
+			print 'loading {0} tiles'.format(tilelistLoad.length)
+			gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
+			argsLoadTiles[0] = tilelistLoad.dList
+			kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles).wait()
 
 		#build list of tiles with excess >= 0 and tiles that received overflow
 		tilelistPush.flagLogical(tilelistBorder.dTiles,
-			StreamCompact.OPERATOR_GTE, StreamCompact.OPERATOR_EQUAL,
-			tilelistPush.iteration-1, tilelistBorder.iteration,
+			StreamCompact.OPERATOR_GTE, tilelistPush.iteration-1,
+			StreamCompact.OPERATOR_EQUAL, tilelistBorder.iteration-globalbfs*4,
 			StreamCompact.LOGICAL_OR
 		)
 
 		init_bfs_iteration = tilelistBfs.iteration
-		startBfs()
+		startBfs(tilelistPush.dList, tilelistPush.length)
 
 #		if isCompleted():
 #			timer.stop()
@@ -624,9 +580,6 @@ def next():
 		activeListAfterBfs()
 		tilelistPush.flag()
 		tilelistPush.increment() #one more increment for additional tiles flaged in activeListAfterBfs()
-
-		argsPushUpDown[11] = np.int32(tilelistBorder.iteration+1)
-		argsPushLeftRight[13] = np.int32(tilelistBorder.iteration+1)
 
 		print 'active tiles:, ', tilelistPush.length
 		if tilelistPush.length == 0:

@@ -73,7 +73,7 @@ class StreamCompact():
 
 		self.kernFlag(queue, gw, self.lw, *args).wait()
 
-	def flagLogical(self, queue, dIn1, dIn2, dOut, operator1, operator2, operand1, operand2, logical, length=None):
+	def flagLogical(self, queue, dIn1, dIn2, dOut, operator1, operand1, operator2, operand2, logical, length=None):
 		if length == None:
 			length = dIn1.size/szInt
 		elif length > self.capacity:
@@ -160,8 +160,8 @@ class TileList():
 		self.streamCompact.compact(self.queue, self.dFlags, self.dList, self.dLength)
 		self.isDirty = True
 
-	def flagLogical(self, dTiles2, operator1, operator2, operand1, operand2, logical):
-		self.streamCompact.flagLogical(self.queue, self.dTiles, dTiles2, self.dFlags, operator1, operator2, operand1, operand2, logical)
+	def flagLogical(self, dTiles2, operator1, operand1, operator2, operand2, logical):
+		self.streamCompact.flagLogical(self.queue, self.dTiles, dTiles2, self.dFlags, operator1, operand1, operator2, operand2, logical)
 		self.streamCompact.compact(self.queue, self.dFlags, self.dList, self.dLength)
 		self.isDirty = True
 
