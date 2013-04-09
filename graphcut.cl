@@ -16,61 +16,64 @@ float weight(uint c1, uint c2);
 #define EXCESS_LARGER_THAN_ZERO 2
 #define EXCESS_LESS_THAN_ZERO 3
 
-__kernel void checkCompletion(
-	__global float* excesses,
-	__global int* height,
-	__local int* tile_has_active_nodes, //tile has active nodes
+#define IMAGEW 800
+#define IMAGEH 608
+
+#define NWAVES (IMAGEH/WAVE_LENGTH)
+
+
+__kernel void check_completion(
+	__global int* tiles_list,
+	__global float* excess,
+	__global int* bfs,
+	__local int* tile_has_active_nodes,
 	__global int* isCompleted
-){
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
+)
+{
+	//get tile x,y offset
+	int txy = tiles_list[get_group_id(0)];
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
-	int ly = get_local_id(0);
+	int ly = get_local_id(1);
 
-	if (ly == 0 && lx == 0)
+	//image coordinates
+	int ix = tx*WAVE_BREDTH + lx;
+	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
+	int ixy = iy*IMAGEW + ix;
+
+	if (lx == 0 && ly == 0)
 		tile_has_active_nodes[0] = FALSE;
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	int ixy = WAVE_LENGTH*gy*gw + gx;
-
 	for (int i=0; i<WAVE_LENGTH; i++) {
-		if (excesses[ixy] > 0 && height[ixy] < MAX_HEIGHT)
+		if (excess[ixy] > 0 && bfs[ixy] < MAX_HEIGHT) { //looking for active nodes
 			tile_has_active_nodes[0] = TRUE;
+		}
 
-		ixy += gw;
+		ixy += IMAGEW;
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (lx == 0 && ly == 0) {
-		if (tile_has_active_nodes[0])
+		if (tile_has_active_nodes[0]) //tile has active nodes
 			isCompleted[0] = FALSE;
 	}
 }
 
-
 //work straight from the excess image - this is just a place holder for now
 __kernel void init_gc(
-	__global float* src,
-	__global float* sink,
+	__global float* excesses,
 	__local int* tile_flags, //tile has nodes with excess >= 0
-	__global int* gc_tiles,
-	int2 gc_tilesPad,
-	int iteration,
-	__global float* excesses
+	__global int* tilesLoad,
+	int iteration
 ) {
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
+	int gxy = gy*IMAGEW + gx;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(0);
@@ -79,18 +82,16 @@ __kernel void init_gc(
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	int ixy = WAVE_LENGTH*gy*gw + gx;
+	int ixy = WAVE_LENGTH*gy*IMAGEW + gx;
 
 	float excess;
 	
 	for (int i=0; i<WAVE_LENGTH; i++) {
-		excess = sink[ixy] - src[ixy];
+		//bfs needs all tiles with excess >= 0
+		if (excesses[ixy] >= 0)
+			tile_flags[0] = TRUE;
 
-		if (excess >= 0) tile_flags[0] = TRUE;
-
-		excesses[ixy] = excess;
-
-		ixy += gw;
+		ixy += IMAGEW;
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -98,124 +99,16 @@ __kernel void init_gc(
 	if (lx == 0 && ly == 0) {
 		int tx = get_group_id(0);
 		int ty = get_group_id(1);
-		int txy = ty*gc_tilesPad.x + tx;
+		int txy = ty*TILESW + tx;
 
 		if (tile_flags[0]) {
-			gc_tiles[txy] = iteration;
+			tilesLoad[txy] = iteration;
 		}
 	}
 }
 
-
-__kernel void initNeighbourhood(
-	__global int* active_tiles_list,
-	int active_tilesW,
-	int active_tilesH,
-	__global uint* img,
-	__global float* up,
-	__global float* down,
-	__global float* left,
-	__global float* right,
-	__local uint* _l_img
-) {
-	//get tile x,y offset
-	int txy = active_tiles_list[get_group_id(0)];
-	int tx = txy%active_tilesW;
-	int ty = txy/active_tilesW;
-
-	int lw = get_local_size(0);
-	int lh = get_local_size(1);
-	int lx = get_local_id(0);
-	int ly = get_local_id(1);
-
-	int _g_img_w = 800;
-	int _g_img_x = tx*WAVE_BREDTH + lx;
-	int _g_img_y = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int _g_img_xy = _g_img_y*_g_img_w + _g_img_x;
-
-	//load 1 pixel thick top and left padded tile of img data,
-	int _l_img_w = lw+2;
-	int _l_img_x = 1 + lx;
-	int _l_img_y = 1 + ly*WAVE_LENGTH;
-	int _l_img_xy = _l_img_y*_l_img_w + _l_img_x;
-	
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		_l_img[_l_img_xy] = img[_g_img_xy];
-
-		_l_img_xy += _l_img_w;
-		_g_img_xy += _g_img_w;
-	}
-
-	//dont check for boundaries, padding can be filled with garbage, we'll replace it later anyways
-	switch(ly) {
-		case 0: //fill top padding
-			_l_img[(1 + lx)] = img[(ty*WORKGROUP_LENGTH-1)*_g_img_w + _g_img_x];
-			break;
-		case 1: //bottom
-			_l_img[(1 + WORKGROUP_LENGTH)*_l_img_w + (1 + lx)] = img[((ty+1)*WORKGROUP_LENGTH)*_g_img_w + _g_img_x];
-			break;
-		case 2: //left
-			_l_img[(1 + lx)*_l_img_w]	= img[(ty*WORKGROUP_LENGTH+lx)*_g_img_w + tx*WAVE_BREDTH-1];
-			break;
-		case 3: //right
-			_l_img[(1 + lx)*_l_img_w + (1 + WAVE_BREDTH)]	= img[(ty*WORKGROUP_LENGTH+lx)*_g_img_w + (tx+1)*WAVE_BREDTH];
-			break;
-	}
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	float term;
-	
-	//up and down weights
-	_g_img_xy = _g_img_y*_g_img_w + _g_img_x;
-	_l_img_xy = _l_img_y*_l_img_w + _l_img_x;
-
-	for (int i=0; i<WAVE_LENGTH; i++, _l_img_xy += _l_img_w, _g_img_xy += _g_img_w) {
-		term = LAMBDA*weight(_l_img[_l_img_xy], _l_img[_l_img_xy-_l_img_w]);
-
-		up[_g_img_xy] = term;
-		if (ly == 0 && i == 0) continue;
-		down[_g_img_xy-_g_img_w] = term;
-	}
-
-	if (ly == lh-1) {
-		term = LAMBDA*weight(_l_img[_l_img_xy], _l_img[_l_img_xy-_l_img_w]);
-		down[_g_img_xy-_g_img_w] = term;
-	}
-
-	if (ty == 0 && ly == 0) up[_g_img_x] = 0;
-	if (ty == active_tilesH-1 && ly == lh-1) down[_g_img_xy-_g_img_w] = 0;
-
-	//left and right weights
-	_g_img_xy = _g_img_y*_g_img_w + _g_img_x;
-	_l_img_xy = _l_img_x*_l_img_w + _l_img_y;
-
-	for (int i=0; i<WAVE_LENGTH; i++, _l_img_xy += 1, _g_img_xy += _g_img_w) {
-		if (tx == 0 && ly == 0 && i == 0)
-			term = 0;
-		else
-			term = LAMBDA*weight(_l_img[_l_img_xy], _l_img[_l_img_xy-1]);
-
-		left[_g_img_xy] = term;
-		if (ly == 0 && i == 0) continue;
-		right[_g_img_xy-_g_img_w] = term;
-	}
-
-	if (tx == active_tilesW-1 && ty == active_tilesH-1) {
-		right[_g_img_xy-_g_img_w] = 0;
-	}
-	else if (ly == lh-1) {
-		term = LAMBDA*weight(_l_img[_l_img_xy], _l_img[_l_img_xy-1]);
-		right[_g_img_xy-_g_img_w] = term;
-	}
-}
-
-#define NUM_NEIGHBOURS 4
-#define NUM_ITERATIONS 5
-
-__kernel void addBorder(
+__kernel void add_border(
 	__global int* tiles_list,
-	int tilesW,
 	__global float* border,
 	__global float* excess,
 	int direction
@@ -223,15 +116,14 @@ __kernel void addBorder(
 {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 
-	int iw = 800;
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = ty;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	int ix2, iy2, ixy2;
 
@@ -254,14 +146,13 @@ __kernel void addBorder(
 		break;
 	}
 
-	ixy2 = iy2*iw + ix2;
+	ixy2 = iy2*IMAGEW + ix2;
 
 	excess[ixy2] += border[ixy];
 }
 
-__kernel void testL(
+__kernel void push_left(
 	__global int* tiles_list,
-	int tilesW,
 	__global float* excess,
 	__local float* excess_s,
 	__global int* height,
@@ -276,8 +167,8 @@ __kernel void testL(
 {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
@@ -287,8 +178,7 @@ __kernel void testL(
 	//image coordinates
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	int iwS = lw + 1;
 	int ixS = lx;
@@ -302,7 +192,7 @@ __kernel void testL(
 		excess_s[ixyS] = excess[ixy];
 		height_s[ixyS + 1] = height[ixy];
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS; //padding to prevent bank conflicts
 	}
 
@@ -310,7 +200,7 @@ __kernel void testL(
 	if (ly == lh-1) {
 		int ix2 = tx*WAVE_BREDTH - 1;
 		int iy2 = ty*WORKGROUP_LENGTH + lx;
-		ixy = iy2*iw + ix2;
+		ixy = iy2*IMAGEW + ix2;
 
 		height_s[lx*iwS + 0] = height[ixy];
 	}
@@ -318,7 +208,7 @@ __kernel void testL(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	iy = (WAVES_PER_WORKGROUP*ty + ly+1)*WAVE_LENGTH - 1;
-	ixy = iy*iw + ix;
+	ixy = iy*IMAGEW + ix;
 
 	ixS = (ly+1)*WAVE_LENGTH - 1;
 	iyS = lx;
@@ -345,12 +235,12 @@ __kernel void testL(
 		excess_s[ixyS] = ef-flow;
 
 		if (ly == 0 && i == WAVE_LENGTH-1)
-			right[ixy - 32 + 31*iw] += flow;	
+			right[ixy - 32 + 31*IMAGEW] += flow;
 		else
-			right[ixy-iw] += flow;	
+			right[ixy-IMAGEW] += flow;
 
 		h = hNext;
-		ixy -= iw;
+		ixy -= IMAGEW;
 		ixyS -= 1;
 	}
 
@@ -363,8 +253,8 @@ __kernel void testL(
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	 iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	ixy = iy*iw + ix;
+	iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
+	ixy = iy*IMAGEW + ix;
 
 	iwS = lw + 1;
 	ixS = lx;
@@ -374,20 +264,19 @@ __kernel void testL(
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		excess[ixy] = excess_s[ixyS];
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS;
 	}
 
 	if (ly == 0 && flags[0] == TRUE) {
-		border[ty*iw + ix - WAVE_BREDTH] = flow;
+		border[ty*IMAGEW + ix - WAVE_BREDTH] = flow;
 		border_tiles[txy - 1] = iteration;
 	}
 }
 
 
-__kernel void test(
+__kernel void push_right(
 	__global int* tiles_list,
-	int tilesW,
 	__global float* excess,
 	__local float* excess_s,
 	__global int* height,
@@ -402,8 +291,8 @@ __kernel void test(
 {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
@@ -413,8 +302,7 @@ __kernel void test(
 	//image coordinates
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	int iwS = lw + 1;
 	int ixS = lx;
@@ -428,7 +316,7 @@ __kernel void test(
 		excess_s[ixyS] = excess[ixy];
 		height_s[ixyS] = height[ixy];
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS; //padding to prevent bank conflicts
 	}
 
@@ -436,14 +324,14 @@ __kernel void test(
 	if (ly == lh-1) {
 		int ix2 = (tx+1)*WAVE_BREDTH;
 		int iy2 = ty*WORKGROUP_LENGTH + lx;
-		ixy = iy2*iw + ix2;
+		ixy = iy2*IMAGEW + ix2;
 
 		height_s[lx*iwS + lw] = height[ixy];
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	ixy = iy*iw + ix;
+	ixy = iy*IMAGEW + ix;
 
 	ixS = ly*WAVE_LENGTH;
 	iyS = lx;
@@ -470,12 +358,12 @@ __kernel void test(
 		excess_s[ixyS] = ef-flow;
 
 		if (ly == 3 && i == WAVE_LENGTH-1)
-			left[ixy + 32 - 31*iw] += flow;	
+			left[ixy + 32 - 31*IMAGEW] += flow;
 		else
-			left[ixy+iw] += flow;	
+			left[ixy+IMAGEW] += flow;
 
 		h = hNext;
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += 1;
 	}
 
@@ -488,7 +376,7 @@ __kernel void test(
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	ixy = iy*iw + ix;
+	ixy = iy*IMAGEW + ix;
 
 	iwS = lw + 1;
 	ixS = lx;
@@ -498,19 +386,18 @@ __kernel void test(
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		excess[ixy] = excess_s[ixyS];
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS;
 	}
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		border[ty*iw + ix + WAVE_BREDTH] = flow;
+		border[ty*IMAGEW + ix + WAVE_BREDTH] = flow;
 		border_tiles[txy + 1] = iteration;
 	}
 }
 
-__kernel void pushDown(
+__kernel void push_down(
 	__global int* tiles_list,
-	int tilesW,
 	__global float* down,
 	__global float* up,
 	__global int* height,
@@ -523,8 +410,8 @@ __kernel void pushDown(
 {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
@@ -533,8 +420,7 @@ __kernel void pushDown(
 	//image coordinates
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	if (lx == 0 && ly == 0)
 		flags[0] = FALSE;
@@ -548,7 +434,7 @@ __kernel void pushDown(
 	
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		ef = excess[ixy] + flow;
-		hNext = height[ixy+iw];
+		hNext = height[ixy+IMAGEW];
 
 		if (ef > 0 && h < MAX_HEIGHT && h == hNext + 1) {
 			flow = min(ef, down[ixy]);
@@ -558,10 +444,10 @@ __kernel void pushDown(
 		
 		down[ixy] -= flow;
 		excess[ixy] = ef-flow;
-		up[ixy+iw] += flow;	
+		up[ixy+IMAGEW] += flow;
 
 		h = hNext;
-		ixy += iw;
+		ixy += IMAGEW;
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -574,14 +460,13 @@ __kernel void pushDown(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == lh-1 && flags[0] == TRUE) {
-		border[ty*iw + ix + iw] = flow;
-		border_tiles[txy + tilesW] = iteration;
+		border[ty*IMAGEW + ix + IMAGEW] = flow;
+		border_tiles[txy + TILESW] = iteration;
 	}
 }
 
-__kernel void pushUp(
+__kernel void push_up(
 	__global int* tiles_list,
-	int tilesW,
 	__global float* down,
 	__global float* up,
 	__global int* height,
@@ -592,10 +477,9 @@ __kernel void pushUp(
 	int iteration
 )
 {
-	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
@@ -603,8 +487,7 @@ __kernel void pushUp(
 	//image coordinates
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = (WAVES_PER_WORKGROUP*ty + ly+1)*WAVE_LENGTH - 1;
-	int iw = 800;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 	
 	if (lx == 0 && ly == 0)
 		flags[0] = FALSE;
@@ -618,7 +501,7 @@ __kernel void pushUp(
 
 	for (int i=WAVE_LENGTH-1; i>=0; i--) {
 		ef = excess[ixy] + flow;
-		hNext = height[ixy-iw];
+		hNext = height[ixy-IMAGEW];
 
 		if (ef > 0 && h < MAX_HEIGHT && h == hNext + 1)
 			flow = min(ef, up[ixy]);
@@ -627,10 +510,10 @@ __kernel void pushUp(
 		
 		up[ixy] -= flow;
 		excess[ixy] = ef-flow;
-		down[ixy-iw] += flow;
+		down[ixy-IMAGEW] += flow;
 
 		h = hNext;
-		ixy -= iw;
+		ixy -= IMAGEW;
 	}
 
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -643,8 +526,8 @@ __kernel void pushUp(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if (ly == 0 && flags[0] == TRUE) {
-		border[ty*iw + ix - iw] = flow;
-		border_tiles[txy - tilesW] = iteration;
+		border[ty*IMAGEW + ix - IMAGEW] = flow;
+		border_tiles[txy - TILESW] = iteration;
 	}
 }
 
@@ -658,16 +541,13 @@ __kernel void relabel(
 	__global int* height2
 )
 {
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
+	int gxy = gy*IMAGEW + gx;
 
 	int gxT = (get_group_id(0)/2)*WAVE_BREDTH + gy%32;
 	int gyT = (get_group_id(1)/2)*WORKGROUP_LENGTH + gx%32;
-	int gxyT = gyT*gw + gxT;
+	int gxyT = gyT*IMAGEW + gxT;
 
 	int h = height[gxy];
 	int newHeight = h;
@@ -675,13 +555,13 @@ __kernel void relabel(
 	if (excess[gxy] > 0 && h < MAX_HEIGHT) {
 		newHeight = MAX_HEIGHT;
 
-		if (gy < gh-1 && down[gxy] > 0)
-			newHeight = imin(newHeight, height[gxy+gw]+1);
+		if (gy < IMAGEH-1 && down[gxy] > 0)
+			newHeight = imin(newHeight, height[gxy+IMAGEW]+1);
 
 		if (gy > 0 && up[gxy] > 0)
-			newHeight = imin(newHeight, height[gxy-gw]+1);
+			newHeight = imin(newHeight, height[gxy-IMAGEW]+1);
 
-		if (gx < gw-1 && right[gxyT] > 0)
+		if (gx < IMAGEW-1 && right[gxyT] > 0)
 			newHeight = imin(newHeight, height[gxy+1]+1);
 
 		if (gx > 0 && left[gxyT] > 0)
@@ -691,8 +571,6 @@ __kernel void relabel(
 	height2[gxy] = newHeight;
 	return;
 }
-
-#define BFS_ACTIVE_TILE 0x10000000
 
 //compact up,down,left,right residual weights
 //handle intertile gaps, flag tiles with discrepancies
@@ -715,16 +593,14 @@ __kernel void init_bfs(
 	__local uchar* can_ups_s,
 	__local uchar* can_rights_s,
 	__local uchar* can_lefts_s,
-	int tilesW,
-	int tilesH,
 	__global int* bfs_tiles,
 	int iteration
 )
 {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
@@ -733,8 +609,7 @@ __kernel void init_bfs(
 	//image coordinates
 	int ix = tx*WAVE_BREDTH + lx;
 	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	int iwS = lw;
 	int ixS = lx;
@@ -744,7 +619,7 @@ __kernel void init_bfs(
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		excess_s[ixyS] = excess[ixy];
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS;
 	}
 
@@ -760,8 +635,8 @@ __kernel void init_bfs(
 	uchar can_left = 0;
 	int dist;
 
-	ixy = iy*iw + ix;
-	ixyS = iyS*iwS + ixS; 
+	ixy = iy*IMAGEW + ix;
+	ixyS = iyS*iwS + ixS;
 
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		if (excess_s[ixyS] >= 0) {
@@ -787,7 +662,7 @@ __kernel void init_bfs(
 			can_left  >>= 1;
 		}
 
-		ixy += iw;
+		ixy += IMAGEW;
 		ixyS += iwS;
 	}
 
@@ -806,14 +681,14 @@ __kernel void init_bfs(
 
 			ix2 = ix;
 			iy2 = ty*WORKGROUP_LENGTH;
-			ixy2 = iy2*iw + ix2;
+			ixy2 = iy2*IMAGEW + ix2;
 
 			ixS = lx;
 			iyS = 0;
 			ixyS = iyS*iwS + ixS;
 
 			e1 = excess_s[ixyS];
-			e2 = excess[ixy2-iw];
+			e2 = excess[ixy2-IMAGEW];
 
 			// no need to check the reverse i.e e2 >= 0 and e1 < 0
 			// if e2 >= 0 was true the tile above would be processed
@@ -824,18 +699,18 @@ __kernel void init_bfs(
 			break;
 
 		case 1: //down
-			if (ty == tilesH-1) break;
+			if (ty == TILESH-1) break;
 
 			ix2 = ix;
 			iy2 = (ty+1)*WORKGROUP_LENGTH - 1;
-			ixy2 = iy2*iw + ix2;
+			ixy2 = iy2*IMAGEW + ix2;
 
 			ixS = lx;
 			iyS = WORKGROUP_LENGTH-1;
 			ixyS = iyS*iwS + ixS;
 
 			e1 = excess_s[ixyS];
-			e2 = excess[ixy2+iw];
+			e2 = excess[ixy2+IMAGEW];
 
 			if (((can_downs_s[3*WAVE_BREDTH + lx] & 128) == 128) && e1 >= 0 && e2 < 0) {
 				bfs[ixy2] = 1;
@@ -844,11 +719,11 @@ __kernel void init_bfs(
 			break;
 
 		case 2: //right
-			if (tx == tilesW-1) break;
+			if (tx == TILESW-1) break;
 
 			ix2 = (tx+1)*WAVE_BREDTH - 1;
 			iy2 = ty*WORKGROUP_LENGTH + lx;
-			ixy2 = iy2*iw + ix2;
+			ixy2 = iy2*IMAGEW + ix2;
 
 			ixS = WAVE_BREDTH-1;
 			iyS = lx;
@@ -868,7 +743,7 @@ __kernel void init_bfs(
 
 			ix2 = tx*WAVE_BREDTH;
 			iy2 = ty*WORKGROUP_LENGTH + lx;
-			ixy2 = iy2*iw + ix2;
+			ixy2 = iy2*IMAGEW + ix2;
 
 			ixS = 0;
 			iyS = lx;
@@ -890,7 +765,7 @@ __kernel void init_bfs(
 	}
 
 	if (ly == 0) {
-		can_downs[ty*iw + ix] =
+		can_downs[ty*IMAGEW + ix] =
 			(can_downs_s[3*WAVE_BREDTH + lx] << 24) |
 			(can_downs_s[2*WAVE_BREDTH + lx] << 16) |
 			(can_downs_s[1*WAVE_BREDTH + lx] << 8 ) |
@@ -898,7 +773,7 @@ __kernel void init_bfs(
 	}
 
 	if (ly == 1) {
-		can_ups[ty*iw + ix] =
+		can_ups[ty*IMAGEW + ix] =
 			(can_ups_s[3*WAVE_BREDTH + lx] << 24) |
 			(can_ups_s[2*WAVE_BREDTH + lx] << 16) |
 			(can_ups_s[1*WAVE_BREDTH + lx] << 8 ) |
@@ -906,7 +781,7 @@ __kernel void init_bfs(
 	}
 
 	if (ly == 2) {
-		can_rights[ty*iw + ix] =
+		can_rights[ty*IMAGEW + ix] =
 			(can_rights_s[3*WAVE_BREDTH + lx] << 24) |
 			(can_rights_s[2*WAVE_BREDTH + lx] << 16) |
 			(can_rights_s[1*WAVE_BREDTH + lx] << 8 ) |
@@ -914,108 +789,7 @@ __kernel void init_bfs(
 	}
 
 	if (ly == 3) {
-		can_lefts[ty*iw + ix] =
-			(can_lefts_s[3*WAVE_BREDTH + lx] << 24) |
-			(can_lefts_s[2*WAVE_BREDTH + lx] << 16) |
-			(can_lefts_s[1*WAVE_BREDTH + lx] << 8 ) |
-			can_lefts_s[lx];
-	}
-}
-
-__kernel void bfs_compact(
-	__global int* active_tiles_list,
-	__global int* num_active_tiles,
-	__global float* down,
-	__global float* up,
-	__global float* right,
-	__global float* left,
-	__global uint* can_downs,
-	__global uint* can_ups,
-	__global uint* can_rights,
-	__global uint* can_lefts,
-	__local uchar* can_downs_s,
-	__local uchar* can_ups_s,
-	__local uchar* can_rights_s,
-	__local uchar* can_lefts_s,
-	int active_tilesW
-)
-{
-	//get tile x,y offset
-	int txy = active_tiles_list[get_group_id(0)];
-	int tx = txy%active_tilesW;
-	int ty = txy/active_tilesW;
-
-	int lx = get_local_id(0);
-	int ly = get_local_id(1);
-	
-	//image coordinates
-	int ix = tx*WAVE_BREDTH + lx;
-	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
-
-	//transposed image coordinates
-	int ixT = ty*WORKGROUP_LENGTH + lx;
-	int iyT = tx*WAVE_BREDTH + ly*WAVE_LENGTH;
-	int ixyT = iyT*608 + ixT;
-
-	//int gwT = gh*WAVE_LENGTH;
-	int iwT = 608;
-	
-	uchar can_down = 0;
-	uchar can_up = 0;
-	uchar can_right = 0;
-	uchar can_left = 0;
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		if (down[ixy]  > 0) can_down  |= 128; //10000000 in binary 
-		if (up[ixy]    > 0) can_up    |= 128;
-		if (right[ixy] > 0) can_right |= 128;
-		if (left[ixy]  > 0) can_left  |= 128;
-
-		if (i != WAVE_LENGTH-1) {
-			can_down  >>= 1;
-			can_up    >>= 1;
-			can_right >>= 1;
-			can_left  >>= 1;
-		}
-
-		ixy += iw;
-		ixyT += iwT;
-	}
-
-	can_downs_s[ly*WAVE_BREDTH + lx] = can_down;
-	can_ups_s[ly*WAVE_BREDTH + lx] = can_up;
-	can_rights_s[ly*WAVE_BREDTH + lx] = can_right;
-	can_lefts_s[ly*WAVE_BREDTH + lx] = can_left;
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	if (ly == 0) {
-		can_downs[ty*iw + ix] =
-			(can_downs_s[3*WAVE_BREDTH + lx] << 24) |
-			(can_downs_s[2*WAVE_BREDTH + lx] << 16) |
-			(can_downs_s[1*WAVE_BREDTH + lx] << 8 ) |
-			can_downs_s[lx];
-	}
-
-	if (ly == 1) {
-		can_ups[ty*iw + ix] =
-			(can_ups_s[3*WAVE_BREDTH + lx] << 24) |
-			(can_ups_s[2*WAVE_BREDTH + lx] << 16) |
-			(can_ups_s[1*WAVE_BREDTH + lx] << 8 ) |
-			can_ups_s[lx];
-	}
-
-	if (ly == 2) {
-		can_rights[ty*iw + ix] =
-			(can_rights_s[3*WAVE_BREDTH + lx] << 24) |
-			(can_rights_s[2*WAVE_BREDTH + lx] << 16) |
-			(can_rights_s[1*WAVE_BREDTH + lx] << 8 ) |
-			can_rights_s[lx];
-	}
-
-	if (ly == 3) {
-		can_lefts[ty*iw + ix] =
+		can_lefts[ty*IMAGEW + ix] =
 			(can_lefts_s[3*WAVE_BREDTH + lx] << 24) |
 			(can_lefts_s[2*WAVE_BREDTH + lx] << 16) |
 			(can_lefts_s[1*WAVE_BREDTH + lx] << 8 ) |
@@ -1027,50 +801,44 @@ __kernel void bfs_compact(
 #define TILE_SIZE 32
 #define BLOCKS_PER_TILE_DIM 2
 
-
-
 __kernel void bfs_intertile(
 	__global int* tiles_list,
-	__global int* num_tiles,
 	__local int* flags,
 	__global int* bfs,
 	__global uint* can_downs,
 	__global uint* can_ups,
 	__global uint* can_rights,
 	__global uint* can_lefts,
-	int tilesW,
-	int imgW,
 	int iteration,
 	__global int* bfs_tiles
 ) {
+	int txy = tiles_list[get_group_id(0)];
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
+
 	int lx = get_local_id(0);
 	int lw = get_local_size(0);
-	
-	//get tile x,y offset
-	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
 
 	if (lx < 3) flags[lx] = FALSE;
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	//intertile gap with tile above
-	int ixy = (ty*WORKGROUP_LENGTH)*imgW + (tx*WAVE_BREDTH + lx); //index into image
-	int ixy2 = ty*imgW + (tx*WAVE_BREDTH + lx); //index into compressed edges
+	int ixy = (ty*WORKGROUP_LENGTH)*IMAGEW + (tx*WAVE_BREDTH + lx); //index into image
+	int ixy2 = ty*IMAGEW + (tx*WAVE_BREDTH + lx); //index into compressed edges
 
 	bool can = can_ups[ixy2] & 0x1;
-	bool can2 = (can_downs[ixy2-imgW] >> WORKGROUP_LENGTH-1) & 0x1;
+	bool can2 = (can_downs[ixy2-IMAGEW] >> WORKGROUP_LENGTH-1) & 0x1;
 
 	int dist = bfs[ixy];
-	int dist2 = bfs[ixy-imgW];
+	int dist2 = bfs[ixy-IMAGEW];
 
 	if(can && dist2+1 < dist) {
 		bfs[ixy] = dist2+1;
 		flags[0] = TRUE;
 	}
 	if(can2 && dist+1 < dist2) {
-		bfs[ixy-imgW] = dist+1;
+		bfs[ixy-IMAGEW] = dist+1;
 		flags[1] = TRUE;
 	}
 
@@ -1078,7 +846,7 @@ __kernel void bfs_intertile(
 	can = can_lefts[ixy2] & 0x1;
 	can2 = (can_rights[ixy2-WAVE_BREDTH] >> WORKGROUP_LENGTH-1) & 0x1;
 
-	ixy = (ty*WORKGROUP_LENGTH + lx)*imgW + tx*WAVE_BREDTH;
+	ixy = (ty*WORKGROUP_LENGTH + lx)*IMAGEW + tx*WAVE_BREDTH;
 
 	dist = bfs[ixy];
 	dist2 = bfs[ixy-1];
@@ -1095,7 +863,7 @@ __kernel void bfs_intertile(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	if      (lx == 0 && flags[0] == TRUE) bfs_tiles[txy]        = iteration;
-	else if (lx == 1 && flags[1] == TRUE) bfs_tiles[txy-tilesW] = iteration;
+	else if (lx == 1 && flags[1] == TRUE) bfs_tiles[txy-TILESW] = iteration;
 	else if (lx == 2 && flags[2] == TRUE) bfs_tiles[txy-1]      = iteration;
 }
 
@@ -1108,31 +876,22 @@ __kernel void bfs_intratile(
 	__global uint* can_ups,
 	__global uint* can_rights,
 	__global uint* can_lefts,
-	//__global int* bfs2,
-	int active_tilesW,
-	int imgW,
 	__local int* _l_didChange,
-	__global int* num_iterations,
 	__global int* bfs_edges,
 	int iteration
 )
 {
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gw = get_global_size(0);
+	int txy = active_tiles[get_group_id(0)];
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
 	int lw = get_local_size(0);
-	
-	//get tile x,y offset
-	int txy = active_tiles[get_group_id(0)];
-	int tx = txy%active_tilesW;
-	int ty = txy/active_tilesW;
 
 	int sw = lw + 2;
 
-	int ixy = (ty*WORKGROUP_LENGTH + ly*WAVE_LENGTH)*imgW + tx*WAVE_BREDTH + lx;
+	int ixy = (ty*WORKGROUP_LENGTH + ly*WAVE_LENGTH)*IMAGEW + tx*WAVE_BREDTH + lx;
 	int sxy = (ly*WAVE_LENGTH + 1)*sw + lx + 1;
 	
 	//load bfs distances into shared mem
@@ -1141,7 +900,7 @@ __kernel void bfs_intratile(
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		bfs_s[sxy] = bfs[ixy]; //height is offeset by 1 in shared mem
 
-		ixy += imgW;
+		ixy += IMAGEW;
 		sxy += sw;
 	}
 
@@ -1155,8 +914,8 @@ __kernel void bfs_intratile(
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	int bxy = ty*imgW + tx*WAVE_BREDTH + lx;
-	int bxyT = tx*608 + ty*WAVE_BREDTH + lx;
+	int bxy = ty*IMAGEW + tx*WAVE_BREDTH + lx;
+	int bxyT = tx*IMAGEH + ty*WAVE_BREDTH + lx;
 
 	uint can_down  = (can_downs[bxy]  >> ly*WAVE_LENGTH);
 	uint can_up    = (can_ups[bxy]    >> ly*WAVE_LENGTH);
@@ -1236,23 +995,22 @@ __kernel void bfs_intratile(
 		i++;
 	}
 	i--;
-	num_iterations[0] = i;
 
 	if (lx ==0 && ly == 0) {
 		if (i>0) {
 			bfs_edges[txy] = iteration;
-			bfs_edges[txy + active_tilesW] = iteration;
+			bfs_edges[txy + TILESW] = iteration;
 			bfs_edges[txy + 1] = iteration;
 		}
 	}
 
-	ixy = (ty*WORKGROUP_LENGTH + ly*WAVE_LENGTH)*imgW + tx*WAVE_BREDTH + lx;
+	ixy = (ty*WORKGROUP_LENGTH + ly*WAVE_LENGTH)*IMAGEW + tx*WAVE_BREDTH + lx;
 	sxy = (ly*WAVE_LENGTH + 1)*sw + lx + 1;
 
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		bfs[ixy] = bfs_s[sxy];
 
-		ixy += imgW;
+		ixy += IMAGEW;
 		sxy += sw;
 	}
 }
@@ -1272,176 +1030,8 @@ float weight(uint c1, uint c2) {
 	return 1.0f / (BETA * sqrt((float) ((r2-r1)*(r2-r1) + (g2-g1)*(g2-g1) + (b2-b1)*(b2-b1))) + EPSILON);
 }
 
-
-__kernel void clear(
-	__global uint* view
-)
-{
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	int ixy = WAVE_LENGTH*gy*gw + gx;
-
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		view[ixy] = 0xFF000000;
-
-		ixy += gw;
-	}
-}
-__kernel void mapTileList(
-	__global int* tiles_list,
-	int tilesW,
-	int iteration,
-	__global uint* view
-)
-{
-	//get tile x,y offset
-	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
-
-	int lx = get_local_id(0);
-	int ly = get_local_id(1);
-
-	//image coordinates
-	int ix = tx*WAVE_BREDTH + lx;
-	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
-
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		view[ixy] = 0xFF0000FF;	
-
-		ixy += iw;
-	}
-}
-
-__kernel void init_push(
-	__global int* tiles_list,
-	int tilesW,
-	__global float* excess,
-	__global int* bfs,
-	__local int* tile_flags,
-	__global int* gc_tiles,
-	int iteration
-)
-{
-	//get tile x,y offset
-	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
-
-	int lx = get_local_id(0);
-	int ly = get_local_id(1);
-	
-	//image coordinates
-	int ix = tx*WAVE_BREDTH + lx;
-	int iy = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
-	int iw = 800;
-	int ixy = iy*iw + ix;
-
-	if (lx == 0 && ly == 0) tile_flags[0] = FALSE;
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-	
-	for (int i=0; i<WAVE_LENGTH; i++) {
-		if (excess[ixy] > 0 && bfs[ixy] < MAX_HEIGHT) { //looking for active nodes
-			tile_flags[0] = TRUE;
-		}
-
-		ixy += iw;
-	}
-
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	if (lx == 0 && ly == 0) {
-		if (tile_flags[0]) //tile has active nodes
-			gc_tiles[txy] = iteration;
-		else
-			//tiles having no nodes with excess are needed when initializing the next round of bfs
-			gc_tiles[txy] = iteration+1; 
-	}
-}
-
-__kernel void viewBorder(
-	__global float* border,
-	__global float* view,
-	uint direction
-)
-{
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
-
-	if (direction == 0 && gy < gh-1)
-		view[(gy+1)*WORKGROUP_LENGTH*gw + gx] = border[gxy];
-
-	else if (direction == 1 && gy > 0)
-		view[gy*WORKGROUP_LENGTH*gw + gx - gw] = border[gxy];
-
-	int gxT = gy;
-	int gyT = 608-gx;
-
-	if (direction == 2 && gy < gh-1)
-		view[(gyT+1)*WORKGROUP_LENGTH*800 + gxT] = border[gxy];
-
-	else if (direction == 3 && gy > 0)
-		view[gyT*WORKGROUP_LENGTH*800 -1] = border[gxy];
-}
-
-__kernel void viewActive(
-	__global int* height,
-	__global float* excess,
-	__global float* down,
-	__global float* right,
-	__global float* up,
-	__global float* left,
-	__global uint* view
-)
-{
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
-	int gx = get_global_id(0);
-	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
-
-	int gxT = (get_group_id(0)/2)*WAVE_BREDTH + gy%32;
-	int gyT = (get_group_id(1)/2)*WORKGROUP_LENGTH + gx%32;
-	int gxyT = gyT*gw + gxT;
-
-	
-
-	uint color = 0xFF000000;
-
-	int h = height[gxy];
-
-	if (excess[gxy] > 0)
-		color |= 0x0000FF00;
-
-	if (h < MAX_HEIGHT)
-		color |= 0x00FF0000;
-
-	if (down[gxy] > 0 && up[gxy] > 0 && left[gxyT] > 0 && right[gxyT] > 0)
-		color |= 0x000000FF;
-
-	view[gxy] = color;
-}
-
-
 __kernel void load_tiles(
 	__global int* tiles_list,
-	int tilesW,
-	int tilesH,
 	__global uint* img,
 	__global float* up,
 	__global float* down,
@@ -1452,15 +1042,15 @@ __kernel void load_tiles(
 ) {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
-	int tx = txy%tilesW;
-	int ty = txy/tilesW;
+	int tx = txy%TILESW;
+	int ty = txy/TILESW;
 
 	int lw = get_local_size(0);
 	int lh = get_local_size(1);
 	int lx = get_local_id(0);
 	int ly = get_local_id(1);
 
-	int _g_img_w = 800;
+	int _g_img_w = IMAGEW;
 	int _g_img_x = tx*WAVE_BREDTH + lx;
 	int _g_img_y = (WAVES_PER_WORKGROUP*ty + ly)*WAVE_LENGTH;
 	int _g_img_xy = _g_img_y*_g_img_w + _g_img_x;
@@ -1516,7 +1106,7 @@ __kernel void load_tiles(
 	}
 
 	if (ty == 0 && ly == 0) up[_g_img_x] = 0;
-	if (ty == tilesH-1 && ly == lh-1) down[_g_img_xy-_g_img_w] = 0;
+	if (ty == TILESH-1 && ly == lh-1) down[_g_img_xy-_g_img_w] = 0;
 
 	//left and right weights
 	_g_img_xy = _g_img_y*_g_img_w + _g_img_x;
@@ -1533,7 +1123,7 @@ __kernel void load_tiles(
 		right[_g_img_xy-_g_img_w] += term;
 	}
 
-	if (tx == tilesW-1 && ty == tilesH-1) {
+	if (tx == TILESW-1 && ty == TILESH-1) {
 		right[_g_img_xy-_g_img_w] = 0;
 	}
 	else if (ly == lh-1) {
@@ -1601,8 +1191,6 @@ float4 colorizei(int val, int2 range, int2 hues) {
 }
 
 __kernel void tranpose(
-//	__global float* n_link,
-//	__global float* n_linkT
 	float2 range,
 	int2 hues,
 	sampler_t sampler,
@@ -1612,12 +1200,9 @@ __kernel void tranpose(
 	__global float* input,
 	int2 inputDim
 ) {
-	int gw = get_global_size(0);
-	int gh = get_global_size(1);
-	int gs = gw*gh;
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
-	int gxy = gy*gw + gx;
+	int gxy = gy*IMAGEW + gx;
 
 	int lw = get_local_size(0);
 	int lh = get_local_size(1);
@@ -1627,20 +1212,17 @@ __kernel void tranpose(
 	int wx = get_group_id(0);
 	int wy = get_group_id(1);
 
-	int iw = gw;
 	int ix = gx;
 	int iy = gy*WAVE_LENGTH;
-	int ixy = iy*iw + ix;
+	int ixy = iy*IMAGEW + ix;
 
 	//transposed coordinates, threads are enumerated vertically within the tile
-	int iwT = gw;
+	int iwT = IMAGEW;
 	int ixT = wx*WAVE_BREDTH + ly*WAVE_LENGTH;
 	int iyT = wy*WORKGROUP_LENGTH + lx;
-//	int ixyT = iyT*iwT + ixT;
 	int2 ixyT = (int2) (ixT, iyT);
 
 	for (int i=0; i<WAVE_LENGTH; i++) {
-//		n_linkT[ixyT] = n_link[ixy];
 		float in = input[ixy];
 		float4 out = colorizef(in, range, hues);
 
@@ -1648,8 +1230,7 @@ __kernel void tranpose(
 
 		write_imagef(rbo_write, ixyT, read + (out-read)*opacity);
 
-		ixy += iw;
-//		ixyT += 1;
+		ixy += IMAGEW;
 		ixyT.x += 1;
 	}
 }
@@ -1661,14 +1242,13 @@ __kernel void tilelist(
 	__read_only image2d_t rbo_read,
 	__write_only image2d_t rbo_write,
 	float opacity,
-	__global int* input,
-	int2 inputDim
+	__global int* input
 ) {
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
 	int2 gxy = (int2) (gx, gy);
 
-	int bxy = (gy/TILE_SIZE)*inputDim.x + gx/TILE_SIZE;
+	int bxy = (gy/TILE_SIZE)*TILESW + gx/TILE_SIZE;
 	int in = input[bxy];
 	float4 out = colorizei(in, range, hues);
 
