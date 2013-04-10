@@ -12,15 +12,10 @@ float weight(uint c1, uint c2);
 
 #define BETA 1.0f/10
 
-#define EXCESS_ZERO 0
-#define EXCESS_LARGER_THAN_ZERO 2
-#define EXCESS_LESS_THAN_ZERO 3
-
 #define IMAGEW 800
 #define IMAGEH 608
 
 #define NWAVES (IMAGEH/WAVE_LENGTH)
-
 
 __kernel void check_completion(
 	__global int* tiles_list,
