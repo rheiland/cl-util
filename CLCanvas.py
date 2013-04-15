@@ -183,6 +183,7 @@ class CLCanvas(QtOpenGL.QGLWidget):
 			if layer.opacity == 1.0:
 				break
 
+		i = 0
 		for layer in reversed(visible):
 			args = [
 				cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
@@ -202,7 +203,7 @@ class CLCanvas(QtOpenGL.QGLWidget):
 				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8))):
 					self.kernBlendImgui(self.queue, gw, LWORKGROUP, *args)
 				elif isFormat(layer.clobj, (Buffer2D, np.uint32)):
-					args.append(layer.clobj.dim)
+					args.append(np.array(layer.clobj.dim, np.int32))
 					self.kernBlendBufui(self.queue, gw, LWORKGROUP, *args)
 				else:
 					raise  NotImplemented("Not yet implemented for type {0}".format(type(layer.clobj)))
@@ -210,6 +211,8 @@ class CLCanvas(QtOpenGL.QGLWidget):
 			self.queue.finish()
 
 			self.swapRbos()
+
+			i += 1
 
 		cl.enqueue_release_gl_objects(self.queue, self.rbosCL)
 

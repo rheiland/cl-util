@@ -31,10 +31,9 @@ class Colorize():
 		def execute(self, queue, args):
 			if self.format[0] == Buffer2D:
 				buf = args[-1]
-				args.append(buf.dim)
-#				args.append(buf.pad)
+				args.append(np.array(buf.dim, np.int32))
 
-			gw = buf.dim.tolist()
+			gw = buf.dim
 
 			self.kern(queue, gw, LWORKGROUP, self.range, self.hues, *args)
 

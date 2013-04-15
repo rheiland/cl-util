@@ -200,9 +200,8 @@ class Buffer2D(cl.Buffer):
 		else:
 			cl.Buffer.__init__(self, context, flags, size=np.dtype(dtype).itemsize*pad*dim[0])
 
-		self.dim = np.array(dim, np.int32)
+		self.dim = dim
 		self.dtype = dtype
-#		self.pad = np.array(pad, np.int32)
 
 	@staticmethod
 	def fromBuffer(buffer, dim, dtype):

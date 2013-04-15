@@ -4,8 +4,6 @@ import os
 import numpy as np
 import Image
 import pyopencl as cl
-import msclib, msclib.clutil as clutil
-from msclib import context, queue, device
 from StreamCompact import StreamCompact, TileList
 from clutil import createProgram, cl, roundUp, ceil_divi, padArray2D, Buffer2D
 import functools
@@ -31,34 +29,37 @@ WAVES_PER_WORKGROUP = 4
 TILEW = WAVE_BREDTH
 TILEH = (WAVES_PER_WORKGROUP*WAVE_LENGTH)
 
-LAMBDA = 60
-EPSILON = 0.05
-
-lWorksizeTiles16 = (16, 16)
-
 class GraphCut:
 	lWorksizeTiles16 = (16, 16)
 	lWorksizeSingleWave = (WAVE_BREDTH, 1)
 	lWorksizeWaves = (WAVE_BREDTH, WAVES_PER_WORKGROUP)
 	lWorksizeBorderAdd = (WAVE_BREDTH, )
 
-	def __init__(self, context, devices, dImg, lamda=LAMBDA):
+	LAMBDA_DEFAULT = 60
+	EPSILON = 0.05
+	BFS_DEFAULT = 5
+
+	def __init__(self, context, devices, dImg, lamda=LAMBDA_DEFAULT):
 		MAX_HEIGHT = height*width
+
+		self.lamda = lamda
+
+		dim = dImg.dim
+		tilesW = dim[0]/TILEW
+		tilesH = dim[1]/TILEH
 
 		options = []
 		options += ['-D MAX_HEIGHT='+repr(MAX_HEIGHT)]
-		options += ['-D LAMBDA='+repr(LAMBDA)]
-		options += ['-D EPSILON='+repr(EPSILON)]
+		options += ['-D LAMBDA='+repr(lamda)]
+		options += ['-D EPSILON='+repr(GraphCut.EPSILON)]
 		options += ['-D TILESW='+str(tilesW)]
 		options += ['-D TILESH='+str(tilesH)]
 
-		context = context
-		devices = context.get_info(cl.context_info.DEVICES)
 		self.queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
 		dir = os.path.dirname(__file__)
 
-		program = clutil.createProgram(context, devices, options, os.path.join(dir, 'graphcut.cl'))
+		program = createProgram(context, devices, options, os.path.join(dir, 'graphcut.cl'))
 		self.kernInitGC = cl.Kernel(program, 'init_gc')
 		self.kernLoadTiles = cl.Kernel(program, 'load_tiles')
 		self.kernPushUp = cl.Kernel(program, 'push_up')
@@ -72,56 +73,73 @@ class GraphCut:
 		self.kernBfsInterTile = cl.Kernel(program, 'bfs_intertile')
 		self.kernCheckCompletion = cl.Kernel(program, 'check_completion')
 
-		dim = dImg.dim
-
 		size = sz32*dim[0]*dim[1]
 		sizeSingleWave = sz32*dim[0]*(dim[1]/TILEH)
 		sizeCompressedWave = sz32*dim[0]*(dim[1]/TILEH)
 
+		self.hIsCompleted = np.array((1, ), np.int32)
+
 		self.dImg = dImg
-		self.dUp = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dDown = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dLeft = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dRight = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dHeight = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dHeight2 = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, size)
-		self.dBorder = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, sizeSingleWave)
-		self.dCanUp = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, sizeSingleWave)
-		self.dCanDown = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, sizeSingleWave)
-		self.dCanLeft = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, sizeSingleWave)
-		self.dCanRight = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, sizeSingleWave)
-		self.dIsCompleted = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, szInt)
+		self.dUp = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.float32)
+		self.dDown = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.float32)
+		self.dLeft = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.float32)
+		self.dRight = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.float32)
+		self.dHeight = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.int32)
+		self.dHeight2 = Buffer2D(context, cm.READ_WRITE, dim=dim, dtype=np.int32)
+		self.dBorder = cl.Buffer(context, cm.READ_WRITE, sizeSingleWave)
+		self.dCanUp = cl.Buffer(context, cm.READ_WRITE, sizeSingleWave)
+		self.dCanDown = cl.Buffer(context, cm.READ_WRITE, sizeSingleWave)
+		self.dCanLeft = cl.Buffer(context, cm.READ_WRITE, sizeSingleWave)
+		self.dCanRight = cl.Buffer(context, cm.READ_WRITE, sizeSingleWave)
+		self.dIsCompleted = cl.Buffer(context, cm.READ_WRITE, szInt)
 
-		tilesW = dim[0]/TILEW
-		tilesH = dim[1]/TILEH
-
-		streamCompact = StreamCompact(context, [device], tilesW*tilesH)
+		streamCompact = StreamCompact(context, devices, tilesW*tilesH)
 
 		shapeTiles = (tilesW, tilesH)
 
-		self.tilelistLoad = TileList(context, [device], shapeTiles)
-		self.tilelistBfs = TileList(context, [device], shapeTiles)
-		self.tilelistEdges = TileList(context, [device], shapeTiles)
-		self.tilelistBorder = TileList(context, [device], shapeTiles)
+		self.tilelistLoad = TileList(context, devices, shapeTiles)
+		self.tilelistBfs = TileList(context, devices, shapeTiles)
+		self.tilelistEdges = TileList(context, devices, shapeTiles)
+		self.tilelistBorder = TileList(context, devices, shapeTiles)
 
-		self.gWorksizeTiles16 = clutil.roundUp(shape, lWorksizeTiles16)
+		self.gWorksizeTiles16 = roundUp(shape, GraphCut.lWorksizeTiles16)
 		self.gWorksizeWaves = (width, height/WAVE_LENGTH)
 		self.gWorksizeSingleWave = (width, height/(WAVES_PER_WORKGROUP*WAVE_LENGTH))
 
-		self.argsLoadTiles = [
-			None, #dList
-			self.dImg,
-			self.dUp,
-			self.dDown,
-			self.dLeft,
-			self.dRight,
-			cl.LocalMemory(szInt*(TILEH+2)*(TILEW+2)),
-			self.tilelistLoad.dTiles
+	def intratile_gaps(self):
+		gWorksizeBfs = (WAVE_BREDTH*self.tilelistBfs.length, WAVE_LENGTH)
 
+		args = [
+			self.tilelistBfs.dList,
+			self.dHeight,
+			cl.LocalMemory(szInt*(WAVE_BREDTH+2)*(WAVE_LENGTH*WAVES_PER_WORKGROUP+2)),
+			self.dCanDown, self.dCanUp, self.dCanRight, self.dCanLeft,
+			cl.LocalMemory(szInt*1),
+			self.tilelistEdges.dTiles,
+			np.int32(self.tilelistEdges.increment())
 		]
-		self.argsInitBfs = [
-			None, #dList
-			self.dExcess,
+		self.kernBfsIntraTile(self.queue, gWorksizeBfs, self.lWorksizeWaves, *args).wait()
+
+	def intertile_gaps(self):
+		lWorksizeBfs = (WAVE_BREDTH, )
+		gWorksizeBfs = (WAVE_BREDTH*self.tilelistEdges.length, )
+
+		args = [
+			self.tilelistEdges.dList,
+			cl.LocalMemory(szInt*3),
+			self.dHeight,
+			self.dCanDown, self.dCanUp, self.dCanRight, self.dCanLeft,
+			np.int32(self.tilelistBfs.increment()),
+			self.tilelistBfs.dTiles
+		]
+		self.kernBfsInterTile(self.queue, gWorksizeBfs, lWorksizeBfs, *args).wait()
+
+	def startBfs(self, dExcess):
+		gWorksize = (WAVE_BREDTH*int(self.tilelistLoad.length), WAVES_PER_WORKGROUP)
+
+		args = [
+			self.tilelistLoad.dList,
+			dExcess,
 			cl.LocalMemory(szInt*TILEH*TILEW),
 			self.dHeight,
 			cl.LocalMemory(szInt*(2+4)),
@@ -132,15 +150,50 @@ class GraphCut:
 			cl.LocalMemory(szChar*WAVE_BREDTH*WAVES_PER_WORKGROUP),
 			cl.LocalMemory(szChar*WAVE_BREDTH*WAVES_PER_WORKGROUP),
 			self.tilelistBfs.dTiles,
-			None
+			np.int32(self.tilelistBfs.increment())
 		]
+		self.kernInitBfs(self.queue, gWorksize, self.lWorksizeWaves, *args).wait()
+
+		while True:
+			self.tilelistBfs.flag()
+
+			if self.tilelistBfs.length > 0:
+				self.intratile_gaps()
+			else:
+				break;
+
+			self.tilelistEdges.flag()
+
+			if self.tilelistEdges.length > 0:
+				self.intertile_gaps()
+			else:
+				break;
+
+	def relabel(self, dExcess):
+		args = [
+			self.dDown,
+			self.dRight,
+			self.dUp,
+			self.dLeft,
+			dExcess,
+			self.dHeight,
+			self.dHeight2
+		]
+
+		self.kernRelabel(self.queue, self.gWorksizeTiles16, GraphCut.lWorksizeTiles16, *args)
+
+		tmpHeight = self.dHeight
+		self.dHeight = self.dHeight2
+		self.dHeight2 = tmpHeight
+
+	def push(self, dExcess):
+		gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
 
 		self.argsPushUpDown = [
 			self.tilelistLoad.dList,
-			self.dDown,
-			self.dUp,
+			self.dDown, self.dUp,
 			self.dHeight,
-			self.dExcess,
+			dExcess,
 			self.dBorder,
 			cl.LocalMemory(szInt*1),
 			self.tilelistBorder.dTiles,
@@ -149,12 +202,11 @@ class GraphCut:
 
 		self.argsPushLeftRight = [
 			self.tilelistLoad.dList,
-			self.dExcess,
+			dExcess,
 			cl.LocalMemory(szFloat*TILEH*(TILEW+1)),
-			dHeight,
+			self.dHeight,
 			cl.LocalMemory(szFloat*TILEH*(TILEW+1)),
-			self.dRight,
-			self.dLeft,
+			self.dRight, self.dLeft,
 			self.dBorder,
 			cl.LocalMemory(szInt*1),
 			self.tilelistBorder.dTiles,
@@ -164,224 +216,151 @@ class GraphCut:
 		self.argsAddBorder = [
 			self.tilelistBorder.dList,
 			self.dBorder,
-			self.dExcess,
+			dExcess,
 			None,
 		]
 
-	def intratile_gaps(self):
-		gWorksizeBfs = (WAVE_BREDTH*self.tilelistBfs.length, WAVE_LENGTH)
+		self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
+		self.kernPushDown(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushUpDown).wait()
 
-		tilelistEdges.increment()
+		self.tilelistBorder.flag()
+		if self.tilelistBorder.length:
+			self.argsAddBorder[3] = np.int32(0)
+			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
+			self.kernAddBorder(self.queue, gWorksizeBorder, self.lWorksizeBorderAdd, *self.argsAddBorder).wait()
 
-		args = [
-			tilelistBfs.dList,
-			dHeight,
-			cl.LocalMemory(szInt*(WAVE_BREDTH+2)*(WAVE_LENGTH*WAVES_PER_WORKGROUP+2)),
-			dCanDown, dCanUp, dCanRight, dCanLeft,
-			cl.LocalMemory(szInt*1),
-			tilelistEdges.dTiles,
-			np.int32(tilelistEdges.iteration)
-		]
+		self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
+		self.kernPushUp(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushUpDown).wait()
 
-		kernBfs(queue, gWorksizeBfs, lWorksizeWaves, *args).wait()
+		self.tilelistBorder.flag()
+		if self.tilelistBorder.length:
+			self.argsAddBorder[3] = np.int32(1)
+			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
+			self.kernAddBorder(self.queue, gWorksizeBorder, self.lWorksizeBorderAdd, *self.argsAddBorder).wait()
 
+		self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
+		self.kernPushRight(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushLeftRight).wait()
 
-	def intertile_gaps(self):
-		lWorksizeBfs = (lWorksizeWaves[0], )
-		gWorksizeBfs = (lWorksizeWaves[0]*int(tilelistEdges.length), )
+		self.tilelistBorder.flag()
+		if self.tilelistBorder.length:
+			self.argsAddBorder[3] = np.int32(2)
+			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
+			self.kernAddBorder(self.queue, gWorksizeBorder, self.lWorksizeBorderAdd, *self.argsAddBorder).wait()
 
-		tilelistBfs.increment()
+		self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
+		self.kernPushLeft(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushLeftRight).wait()
 
-		args = [
-			tilelistEdges.dList,
-			cl.LocalMemory(szInt*3),
-			dHeight,
-			dCanDown, dCanUp, dCanRight, dCanLeft,
-			np.int32(tilelistBfs.iteration),
-			tilelistBfs.dTiles
-		]
-
-		kernBfsInterTile(queue, gWorksizeBfs, lWorksizeBfs, *args).wait()
-
-	def startBfs(dList, length):
-		tilelistBfs.increment()
-		argsInitBfs[18] = np.int32(tilelistBfs.iteration)
-
-		argsInitBfs[3] = dHeight
-
-		argsInitBfs[0] =  dList
-
-		gWorksize = (lWorksizeWaves[0]*int(length), lWorksizeWaves[1])
-		kernInitBfs(queue, gWorksize, lWorksizeWaves, *argsInitBfs).wait()
-
-		while True:
-			tilelistBfs.flag()
-
-			if tilelistBfs.length > 0:
-				intratile_gaps()
-			else:
-				break;
-
-			tilelistEdges.flag()
-
-			if tilelistEdges.length > 0:
-				intertile_gaps()
-			else:
-				break;
-
-	def relabel():
-		global dHeight, dHeight2
-
-		kernRelabel(queue, gWorksizeTiles16, lWorksizeTiles16, dDown, dRight, dUp, dLeft, dExcess, dHeight, dHeight2)
-
-		tmpHeight = dHeight
-		dHeight = dHeight2
-		dHeight2 = tmpHeight
-
-	def push():
-		#dHeight and dHeight2 swap after BFS
-		argsPushUpDown[3] = dHeight
-		argsPushLeftRight[3] = dHeight
-
-		gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
-
-		tilelistBorder.increment()
-		argsPushUpDown[8] = np.int32(tilelistBorder.iteration)
-		kernPushDown(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
-		tilelistBorder.flag()
-		if tilelistBorder.length:
-			argsAddBorder[3] = np.int32(0)
-			gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
-			kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
+		self.tilelistBorder.flag()
+		if self.tilelistBorder.length:
+			self.argsAddBorder[3] = np.int32(3)
+			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
+			self.kernAddBorder(self.queue, gWorksizeBorder, self.lWorksizeBorderAdd, *self.argsAddBorder).wait()
 
 
-		tilelistBorder.increment()
-		argsPushUpDown[8] = np.int32(tilelistBorder.iteration)
-		kernPushUp(queue, gWorksizeList, lWorksizeWaves, *argsPushUpDown).wait()
-		tilelistBorder.flag()
-		if tilelistBorder.length:
-			argsAddBorder[3] = np.int32(1)
-			gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
-			kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
+	def reset(self):
+#		pass
+		self.iteration = 1
 
-
-		tilelistBorder.increment()
-		argsPushLeftRight[10] = np.int32(tilelistBorder.iteration)
-		kernPushRight(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
-		tilelistBorder.flag()
-		if tilelistBorder.length:
-			argsAddBorder[3] = np.int32(2)
-			gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
-			kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
-
-
-		tilelistBorder.increment()
-		argsPushLeftRight[10] = np.int32(tilelistBorder.iteration)
-		kernPushLeft(queue, gWorksizeList, lWorksizeWaves, *argsPushLeftRight).wait()
-		tilelistBorder.flag()
-		if tilelistBorder.length:
-			argsAddBorder[3] = np.int32(3)
-			gWorksizeBorder2 = (lWorksizeWaves[0]*tilelistBorder.length, )
-			kernAddBorder(queue, gWorksizeBorder2, lWorksizeBorderAdd, *argsAddBorder).wait()
-
-
-	def constructor():
-		pass
-#		write kernel
-#		self.iteration = 1
-#
 #		hDown[:] = 0
 #		hUp[:] = 0
 #		hRight[:] = 0
 #		hLeft[:] = 0
 #		hHeight[:] = 0
 #		hHeight2[:] = 0
-#
+
 #		cl.enqueue_copy(queue, dDown, hDown).wait()
 #		cl.enqueue_copy(queue, dUp, hUp).wait()
 #		cl.enqueue_copy(queue, dRight, hRight).wait()
 #		cl.enqueue_copy(queue, dLeft, hLeft).wait()
-#		cl.enqueue_copy(queue, dHeight, hHeight).wait()
+#		cl.enqueue_copy(self.queue, self.dHeight, self.hHeight).wait()
 #		cl.enqueue_copy(queue, dHeight2, hHeight2).wait()
-#
-#		tilelistLoad.reset()
-#		tilelistBfs.reset()
-#		tilelistEdges.reset()
-#		tilelistBorder.reset()
 
-	def isCompleted():
-		cl.enqueue_copy(queue, dIsCompleted, np.int32(True))
+#		self.tilelistLoad.reset()
+#		self.tilelistBfs.reset()
+#		self.tilelistEdges.reset()
+#		self.tilelistBorder.reset()
+
+	def isCompleted(self, dExcess):
+		cl.enqueue_copy(self.queue, self.dIsCompleted, np.int32(True))
+
+		gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
 
 		args = [
-			tilelistLoad.dList,
+			self.tilelistLoad.dList,
 			dExcess,
-			dHeight,
+			self.dHeight,
 			cl.LocalMemory(szInt*1),
-			dIsCompleted
+			self.dIsCompleted
 		]
+		self.kernCheckCompletion(self.queue, gWorksize, self.lWorksizeWaves, *args)
 
-		gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
-		kernCheckCompletion(queue, gWorksizeList, lWorksizeWaves, *args)
+		cl.enqueue_copy(self.queue, self.hIsCompleted, self.dIsCompleted)
+		self.queue.finish()
 
-		cl.enqueue_copy(queue, hIsCompleted, dIsCompleted).wait()
+		return True if self.hIsCompleted[0] else False
 
-		return True if hIsCompleted[0] else False
-
-	def cut(self, dExcess):
-		#in the future only accept with dExcess and build tile list from there
-		#hit the ground running with dExcess already calculated everywhere
+	def cut(self, dExcess, bfs=BFS_DEFAULT):
 		argsInitGC = [
+			self.dUp,
+			self.dDown,
+			self.dLeft,
+			self.dRight,
 			dExcess,
 			cl.LocalMemory(szInt*1),
-			tilelistLoad.dTiles,
-			np.int32(tilelistLoad.iteration),
+			self.tilelistLoad.dTiles,
+			np.int32(self.tilelistLoad.iteration),
 		]
 
-		kernInitGC(queue, gWorksizeWaves, lWorksizeWaves, *argsInitGC).wait()
+		argsLoadTiles = [
+			self.tilelistLoad.dList,
+			self.dImg,
+			self.dUp, self.dDown, self.dLeft, self.dRight,
+			cl.LocalMemory(szInt*(TILEH+2)*(TILEW+2)),
+			self.tilelistLoad.dTiles
+		]
 
-		tilelistLoad.flag()
-		gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
-		argsLoadTiles[0] = tilelistLoad.dList
-		kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles)
+		self.kernInitGC(self.queue, self.gWorksizeWaves, self.lWorksizeWaves, *argsInitGC).wait()
 
-		startBfs(tilelistLoad.dList, tilelistLoad.length)
+		self.tilelistLoad.flag()
+		gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
+		self.kernLoadTiles(self.queue, gWorksize, self.lWorksizeWaves, *argsLoadTiles).wait()
+
+		self.startBfs(dExcess)
 
 		iteration = 1
-		globalbfs = 5
 
 		while True:
 			print 'iteration:', iteration
 
-			push()
+			self.push(dExcess)
 
-			if iteration%globalbfs == 0:
-				tilelistLoad.flagLogical(tilelistBorder.dTiles,
+			if iteration%bfs == 0:
+				self.tilelistLoad.flagLogical(self.tilelistBorder.dTiles,
 					StreamCompact.OPERATOR_EQUAL, -1,
-					StreamCompact.OPERATOR_GT, tilelistBorder.iteration-globalbfs*4,
+					StreamCompact.OPERATOR_GT, self.tilelistBorder.iteration-bfs*4,
 					StreamCompact.LOGICAL_AND
 				)
 
-				if tilelistLoad.length > 0:
-					print '-- loading {0} tiles'.format(tilelistLoad.length)
-					gWorksizeList = (lWorksizeWaves[0]*tilelistLoad.length, lWorksizeWaves[1])
-					argsLoadTiles[0] = tilelistLoad.dList
-					kernLoadTiles(queue, gWorksizeList, lWorksizeWaves, *argsLoadTiles).wait()
+				if self.tilelistLoad.length > 0:
+					print '-- loading {0} tiles'.format(self.tilelistLoad.length)
+					gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
+					self.kernLoadTiles(self.queue, gWorksize, self.lWorksizeWaves, *argsLoadTiles).wait()
 
-				tilelistLoad.flag(StreamCompact.OPERATOR_GT, -1)
-				startBfs(tilelistLoad.dList, tilelistLoad.length)
+				self.tilelistLoad.flag(StreamCompact.OPERATOR_GT, -1)
+				self.startBfs(dExcess)
 
-				if isCompleted():
+				if self.isCompleted(dExcess):
 					window.updateCanvas()
 					return
 
-				print 'active tiles:, ', tilelistLoad.length
+				print 'active tiles:, ', self.tilelistLoad.length
 			else:
-		#		pass
-				relabel()
+				self.relabel(dExcess)
 
 			iteration += 1
 
-			window.updateCanvas()
+	def reset(self):
+		pass
 
 
 if __name__ == "__main__":
@@ -390,11 +369,10 @@ if __name__ == "__main__":
 		img = img.convert('RGBA')
 
 	shapeNP = (img.size[1], img.size[0])
-	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, lWorksizeTiles16), 'edge')
+	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shapeNP, GraphCut.lWorksizeTiles16), 'edge')
 
 	width = hImg.shape[1]
 	height = hImg.shape[0]
-	length = width*height
 	size = (width, height)
 	shape = (width, height)
 	shapeT = (height, width)
@@ -405,13 +383,35 @@ if __name__ == "__main__":
 	canvas = CLCanvas(shape)
 	window = CLWindow(canvas)
 
+	context = canvas.context
+
+	dImg = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hImg)
+
+	devices = context.get_info(cl.context_info.DEVICES)
+
+	gc = GraphCut(context, devices, dImg)
+
 	window.resize(1000, 700)
 
 	hSrc = np.load('scoreFg.npy').reshape(shapeNp)
 	hSink = np.load('scoreBg.npy').reshape(shapeNp)
 
+	dExcess = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=(hSink-hSrc))
+
 	hWeightMin = 0
-	hWeightMax = LAMBDA * 1.0/EPSILON
+	hWeightMax = gc.lamda * 1.0/GraphCut.EPSILON
+
+	options = [
+		'-D IMAGEW={0}'.format(shape[0]),
+		'-D IMAGEH={0}'.format(shape[1]),
+		'-D TILESW='+str(gc.tilelistLoad.shape[0]),
+		'-D TILESH='+str(gc.tilelistLoad.shape[1])
+	]
+	filename = os.path.join(os.path.dirname(__file__), 'graphcut_filter.cl')
+	program = createProgram(canvas.context, canvas.devices, options, filename)
+
+	kernTranspose = cl.Kernel(program, 'tranpose')
+	kernTileList = cl.Kernel(program, 'tilelist')
 
 	class TileListFilter():
 		class Filter(Colorize.Filter):
@@ -423,19 +423,16 @@ if __name__ == "__main__":
 			def execute(self, queue, args):
 				range = np.array([self.tileflags.iteration-1, self.tileflags.iteration], np.int32)
 
-				self.kern(queue, gWorksizeTiles16, lWorksizeTiles16, range, self.hues, *args)
+				kernTileList(queue, gc.gWorksizeTiles16, GraphCut.lWorksizeTiles16, range, self.hues, *args)
 
 		def __init__(self, canvas):
-			filename = os.path.join(os.path.dirname(__file__), 'graphcut.cl')
-			program = createProgram(canvas.context, canvas.devices, options, filename)
-
-			self.kernel = cl.Kernel(program, 'tilelist')
+			pass
 
 		def factory(self, tileflags, hues=None):
 			if hues == None:
 				hues = Colorize.HUES.STANDARD
 
-			return TileListFilter.Filter(self.kernel, (Buffer2D, np.int32), hues, tileflags)
+			return TileListFilter.Filter(kernTileList, (Buffer2D, np.int32), hues, tileflags)
 
 	class TransposeColorize():
 		class Filter(Colorize.Filter):
@@ -443,21 +440,18 @@ if __name__ == "__main__":
 				Colorize.Filter.__init__(self, kern, format, range, hues)
 
 			def execute(self, queue, args):
-				args.append(args[-1].dim)
+				args.append(np.array(args[-1].dim, np.int32))
 
-				self.kern(queue, gWorksizeWaves, lWorksizeWaves, self.range, self.hues, *args)
+				kernTranspose(queue, gc.gWorksizeWaves, GraphCut.lWorksizeWaves, self.range, self.hues, *args)
 
 		def __init__(self, canvas):
-			filename = os.path.join(os.path.dirname(__file__), 'graphcut.cl')
-			program = createProgram(canvas.context, canvas.devices, options, filename)
-
-			self.kernel = cl.Kernel(program, 'tranpose')
+			pass
 
 		def factory(self, range, hues=None):
 			if hues == None:
 				hues = Colorize.HUES.STANDARD
 
-			return TransposeColorize.Filter(self.kernel, (Buffer2D, np.float32), range, hues)
+			return TransposeColorize.Filter(kernTranspose, (Buffer2D, np.float32), range, hues)
 
 	tilelistfilter = TileListFilter(canvas)
 	transposefilter = TransposeColorize(canvas)
@@ -467,51 +461,46 @@ if __name__ == "__main__":
 	window.addLayer('excess', dExcess, filter=filter)
 
 	filter = colorize.factory((Buffer2D, np.int32), (1, 144), hues=Colorize.HUES.REVERSED)
-	window.addLayer('height', dHeight, filter=filter)
-	window.addLayer('height2/bfs', dHeight2, filter=filter)
+	window.addLayer('height', gc.dHeight, filter=filter)
+	window.addLayer('height2/bfs', gc.dHeight2, filter=filter)
 
-	filter = tilelistfilter.factory(tilelistBfs, hues=Colorize.HUES.REVERSED)
-	window.addLayer('tiles Bfs', tilelistBfs.dTiles, filter=filter)
+	filter = tilelistfilter.factory(gc.tilelistBfs, hues=Colorize.HUES.REVERSED)
+	window.addLayer('tiles Bfs', gc.tilelistBfs.dTiles, filter=filter)
 
-	filter = tilelistfilter.factory(tilelistLoad, hues=Colorize.HUES.REVERSED)
-	window.addLayer('tiles Load', tilelistLoad.dTiles, filter=filter)
+	filter = tilelistfilter.factory(gc.tilelistLoad, hues=Colorize.HUES.REVERSED)
+	window.addLayer('tiles Load', gc.tilelistLoad.dTiles, filter=filter)
 
-	filter = tilelistfilter.factory(tilelistBorder, hues=Colorize.HUES.REVERSED)
-	window.addLayer('tiles Border', tilelistBorder.dTiles, filter=filter)
+	filter = tilelistfilter.factory(gc.tilelistBorder, hues=Colorize.HUES.REVERSED)
+	window.addLayer('tiles Border', gc.tilelistBorder.dTiles, filter=filter)
 
-	filter = tilelistfilter.factory(tilelistEdges, hues=Colorize.HUES.REVERSED)
-	window.addLayer('tiles Edges', tilelistEdges.dTiles, filter=filter)
-
-	filter = colorize.factory((Buffer2D, np.float32), (0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
-	window.addLayer('up', dUp, filter=filter)
-	window.addLayer('down', dDown, filter=filter)
-
-	filter = transposefilter.factory((0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
-	window.addLayer('left', dLeft, filter=filter)
-	window.addLayer('right', dRight, filter=filter)
+	filter = tilelistfilter.factory(gc.tilelistEdges, hues=Colorize.HUES.REVERSED)
+	window.addLayer('tiles Edges', gc.tilelistEdges.dTiles, filter=filter)
 
 	window.addLayer('img', dImg)
 
+	filter = colorize.factory((Buffer2D, np.float32), (0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
+	window.addLayer('up', gc.dUp, filter=filter)
+	window.addLayer('down', gc.dDown, filter=filter)
 
+	filter = transposefilter.factory((0.001, hWeightMax), hues=Colorize.HUES.REVERSED)
+	window.addLayer('left', gc.dLeft, filter=filter)
+	window.addLayer('right', gc.dRight, filter=filter)
+#
+	timer = QtCore.QTimer()
+#	timer.timeout.connect(next)
 
+	def reset():
+		cl.enqueue_copy(gc.queue, dExcess, (hSink-hSrc))
 
+	window.addButton("push", gc.push)
+	window.addButton("relabel", gc.relabel)
+	window.addButton("cut", functools.partial(gc.cut, dExcess, 5))
+#	window.addButton("start", functools.partial(timer.start, 0))
+#	window.addButton("stop", timer.stop)
+	window.addButton("reset", reset)
 
+	window.show()
 
-
-
-timer = QtCore.QTimer()
-timer.timeout.connect(next)
-
-window.addButton("push", push)
-window.addButton("relabel", relabel)
-window.addButton("next", next)
-window.addButton("start", functools.partial(timer.start, 0))
-window.addButton("stop", timer.stop)
-window.addButton("intercept", intercept)
-window.addButton("init", init)
-window.addButton("reset", reset)
-
-window.show()
-sys.exit(app.exec_())
+	sys.exit(app.exec_())
 
 

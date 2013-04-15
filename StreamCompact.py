@@ -152,6 +152,8 @@ class TileList():
 	def increment(self):
 		self.iteration += 1
 
+		return self.iteration
+
 	def flag(self, operator=None, operand=None):
 		if operator == None: operator = StreamCompact.OPERATOR_EQUAL
 		if operand == None:  operand = self.iteration
