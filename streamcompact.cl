@@ -12,6 +12,19 @@
 
 __kernel void init(
 	__global int* tiles,
+	int2 tilesDim
+) {
+	int gx = get_global_id(0);
+	int gy = get_global_id(1);
+
+	if (gx > tilesDim.x-1 || gy > tilesDim.y-1)
+		return;
+
+	tiles[gy*tilesDim.x + gx] = FALSE;
+}
+
+__kernel void init_incremental(
+	__global int* tiles,
 	int2 tilesDim,
 	int iteration
 ) {
@@ -107,4 +120,50 @@ __kernel void flagLogical(
 	}	
 
 	out[gx] = flag1;
+}
+
+__kernel void incrementLogical(
+	__global int* in1,
+	__global int* in2,
+	__global int* out,
+	int length,
+    int operator1,
+    int operator2,
+    int operand1,
+    int operand2,
+	int logical,
+	int iteration
+)
+{
+	int gx = get_global_id(0);
+
+	if (gx > length-1)
+		return;
+
+	int flag1 = FALSE;
+	int flag2 = FALSE;
+
+	switch(operator1) {
+		case OPERATOR_EQUAL: if (in1[gx] == operand1) flag1 = TRUE; break;
+		case OPERATOR_GT:    if (in1[gx] >  operand1) flag1 = TRUE; break;
+		case OPERATOR_LT:    if (in1[gx] <  operand1) flag1 = TRUE; break;
+		case OPERATOR_GTE:   if (in1[gx] >= operand1) flag1 = TRUE; break;
+		case OPERATOR_LTE:   if (in1[gx] <= operand1) flag1 = TRUE; break;
+	}
+
+	switch(operator2) {
+		case OPERATOR_EQUAL: if (in2[gx] == operand2) flag2 = TRUE; break;
+		case OPERATOR_GT:    if (in2[gx] >  operand2) flag2 = TRUE; break;
+		case OPERATOR_LT:    if (in2[gx] <  operand2) flag2 = TRUE; break;
+		case OPERATOR_GTE:   if (in2[gx] >= operand2) flag2 = TRUE; break;
+		case OPERATOR_LTE:   if (in2[gx] <= operand2) flag2 = TRUE; break;
+	}
+
+	switch(logical) {
+		case LOGICAL_AND: flag1 = flag1 && flag2; break;
+		case LOGICAL_OR : flag1 = flag1 || flag2; break;
+	}
+
+	if (flag1)
+		out[gx] = iteration;
 }

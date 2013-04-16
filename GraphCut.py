@@ -1,19 +1,11 @@
 __author__ = 'marcdeklerk'
 
-import os
+import sys, os
 import numpy as np
 import Image
 import pyopencl as cl
-from StreamCompact import StreamCompact, TileList
-from clutil import createProgram, cl, roundUp, ceil_divi, padArray2D, Buffer2D
-import functools
-
-from PyQt4 import QtCore, QtGui, QtOpenGL
-from CLWindow import CLWindow
-from CLCanvas import CLCanvas
-from Colorize import Colorize
-import sys
-import time
+from StreamCompact import StreamCompact, IncrementalTileList
+from clutil import createProgram, roundUp, padArray2D, Buffer2D
 
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
@@ -97,10 +89,10 @@ class GraphCut:
 
 		shapeTiles = (tilesW, tilesH)
 
-		self.tilelistLoad = TileList(context, devices, shapeTiles)
-		self.tilelistBfs = TileList(context, devices, shapeTiles)
-		self.tilelistEdges = TileList(context, devices, shapeTiles)
-		self.tilelistBorder = TileList(context, devices, shapeTiles)
+		self.tilelistLoad = IncrementalTileList(context, devices, shapeTiles)
+		self.tilelistBfs = IncrementalTileList(context, devices, shapeTiles)
+		self.tilelistEdges = IncrementalTileList(context, devices, shapeTiles)
+		self.tilelistBorder = IncrementalTileList(context, devices, shapeTiles)
 
 		self.gWorksizeTiles16 = roundUp(shape, GraphCut.lWorksizeTiles16)
 		self.gWorksizeWaves = (width, height/WAVE_LENGTH)
@@ -155,14 +147,14 @@ class GraphCut:
 		self.kernInitBfs(self.queue, gWorksize, self.lWorksizeWaves, *args).wait()
 
 		while True:
-			self.tilelistBfs.flag()
+			self.tilelistBfs.build()
 
 			if self.tilelistBfs.length > 0:
 				self.intratile_gaps()
 			else:
 				break;
 
-			self.tilelistEdges.flag()
+			self.tilelistEdges.build()
 
 			if self.tilelistEdges.length > 0:
 				self.intertile_gaps()
@@ -223,7 +215,7 @@ class GraphCut:
 		self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
 		self.kernPushDown(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushUpDown).wait()
 
-		self.tilelistBorder.flag()
+		self.tilelistBorder.build()
 		if self.tilelistBorder.length:
 			self.argsAddBorder[3] = np.int32(0)
 			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
@@ -232,7 +224,7 @@ class GraphCut:
 		self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
 		self.kernPushUp(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushUpDown).wait()
 
-		self.tilelistBorder.flag()
+		self.tilelistBorder.build()
 		if self.tilelistBorder.length:
 			self.argsAddBorder[3] = np.int32(1)
 			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
@@ -241,7 +233,7 @@ class GraphCut:
 		self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
 		self.kernPushRight(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushLeftRight).wait()
 
-		self.tilelistBorder.flag()
+		self.tilelistBorder.build()
 		if self.tilelistBorder.length:
 			self.argsAddBorder[3] = np.int32(2)
 			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
@@ -250,7 +242,7 @@ class GraphCut:
 		self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
 		self.kernPushLeft(self.queue, gWorksize, self.lWorksizeWaves, *self.argsPushLeftRight).wait()
 
-		self.tilelistBorder.flag()
+		self.tilelistBorder.build()
 		if self.tilelistBorder.length:
 			self.argsAddBorder[3] = np.int32(3)
 			gWorksizeBorder = (WAVE_BREDTH*self.tilelistBorder.length, )
@@ -300,6 +292,8 @@ class GraphCut:
 		return True if self.hIsCompleted[0] else False
 
 	def cut(self, dExcess, bfs=BFS_DEFAULT):
+		loadIteration = self.tilelistLoad.iteration
+
 		argsInitGC = [
 			self.dUp,
 			self.dDown,
@@ -308,20 +302,19 @@ class GraphCut:
 			dExcess,
 			cl.LocalMemory(szInt*1),
 			self.tilelistLoad.dTiles,
-			np.int32(self.tilelistLoad.iteration),
-		]
+			np.int32(self.tilelistLoad.increment()),
+			]
 
 		argsLoadTiles = [
 			self.tilelistLoad.dList,
 			self.dImg,
 			self.dUp, self.dDown, self.dLeft, self.dRight,
-			cl.LocalMemory(szInt*(TILEH+2)*(TILEW+2)),
-			self.tilelistLoad.dTiles
+			cl.LocalMemory(szInt*(TILEH+2)*(TILEW+2))
 		]
 
 		self.kernInitGC(self.queue, self.gWorksizeWaves, self.lWorksizeWaves, *argsInitGC).wait()
 
-		self.tilelistLoad.flag()
+		self.tilelistLoad.build()
 		gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
 		self.kernLoadTiles(self.queue, gWorksize, self.lWorksizeWaves, *argsLoadTiles).wait()
 
@@ -335,18 +328,21 @@ class GraphCut:
 			self.push(dExcess)
 
 			if iteration%bfs == 0:
-				self.tilelistLoad.flagLogical(self.tilelistBorder.dTiles,
-					StreamCompact.OPERATOR_EQUAL, -1,
+				self.tilelistLoad.increment()
+
+				self.tilelistLoad.incorporate(self.tilelistBorder.dTiles,
+					StreamCompact.OPERATOR_LTE, loadIteration,
 					StreamCompact.OPERATOR_GT, self.tilelistBorder.iteration-bfs*4,
 					StreamCompact.LOGICAL_AND
 				)
 
+				self.tilelistLoad.build()
 				if self.tilelistLoad.length > 0:
 					print '-- loading {0} tiles'.format(self.tilelistLoad.length)
 					gWorksize = (WAVE_BREDTH*self.tilelistLoad.length, WAVES_PER_WORKGROUP)
 					self.kernLoadTiles(self.queue, gWorksize, self.lWorksizeWaves, *argsLoadTiles).wait()
 
-				self.tilelistLoad.flag(StreamCompact.OPERATOR_GT, -1)
+				self.tilelistLoad.build(StreamCompact.OPERATOR_GT, loadIteration)
 				self.startBfs(dExcess)
 
 				if self.isCompleted(dExcess):
@@ -364,6 +360,12 @@ class GraphCut:
 
 
 if __name__ == "__main__":
+	from PyQt4 import QtCore, QtGui
+	from CLWindow import CLWindow
+	from CLCanvas import CLCanvas
+	from Colorize import Colorize
+	import functools
+
 	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
 	if img.mode != 'RGBA':
 		img = img.convert('RGBA')

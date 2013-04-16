@@ -1037,8 +1037,7 @@ __kernel void load_tiles(
 	__global float* down,
 	__global float* left,
 	__global float* right,
-	__local uint* _l_img,
-	__global int* tilesLoaded
+	__local uint* _l_img
 ) {
 	//get tile x,y offset
 	int txy = tiles_list[get_group_id(0)];
@@ -1130,6 +1129,4 @@ __kernel void load_tiles(
 		term = LAMBDA*weight(_l_img[_l_img_xy], _l_img[_l_img_xy-1]);
 		right[_g_img_xy-_g_img_w] = term;
 	}
-
-	tilesLoaded[txy] = TRUE;
 }

@@ -4,7 +4,7 @@ import pyopencl as cl
 import numpy as np
 import os
 from clutil import roundUp, padArray2D, createProgram, Buffer2D
-from StreamCompact import StreamCompact, TileList
+from StreamCompact import StreamCompact, IncrementalTileList
 
 LWORKGROUP = (16, 16)
 
@@ -66,7 +66,7 @@ class GrowCut():
 
 		shapeTiles = (tilesW, tilesH)
 
-		self.tilelist = TileList(context, devices, shapeTiles)
+		self.tilelist = IncrementalTileList(context, devices, shapeTiles)
 
 		self.hEnemiesIn = np.zeros(shapeNP,np.int32)
 		self.hLabelsIn = np.zeros(shapeNP,np.int32)
@@ -132,7 +132,7 @@ class GrowCut():
 	def evolve(self, queue):
 		self.isComplete = False
 
-		self.tilelist.flag()
+		self.tilelist.build()
 
 		if self.tilelist.length == 0:
 			self.isComplete = True
@@ -248,7 +248,6 @@ if __name__ == "__main__":
 		growCut.evolve(queue)
 
 		if growCut.isComplete:
-			print 'complete'
 			timer.stop()
 
 			window.updateCanvas()
@@ -296,7 +295,7 @@ if __name__ == "__main__":
 	colorize = Colorize(canvas)
 
 	#setup window
-	filter = colorize.factory((Buffer2D, np.int32), (0, 9))
+	filter = colorize.factory((Buffer2D, np.int32), (0, 4))
 	window.addLayer('strokes', dStrokes, 0.25, filter=filter)
 	window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
 	window.addLayer('image', dImg)
