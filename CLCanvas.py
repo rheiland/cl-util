@@ -180,8 +180,8 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 			visible.append(layer)
 
-			if layer.opacity == 1.0:
-				break
+#			if layer.opacity == 1.0:
+#				break
 
 		i = 0
 		for layer in reversed(visible):

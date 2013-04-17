@@ -19,6 +19,8 @@ __global kernel void blend_imgui(
 	uint4 in = read_imageui(input, sampler, gxy);
 	float4 out = uint42f4n(in);
 
+	opacity *= out.w;
+
 	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }
 
@@ -41,6 +43,8 @@ __global kernel void blend_bufui(
 	uint4 in4 = RGBA_UI_TO_UI4(in);
 	float4 out = uint42f4n(in4);
 
+	opacity *= out.w;
+
 	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }
 
@@ -59,6 +63,8 @@ __global kernel void blend_imgf(
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
 	float4 out = read_imagef(input, sampler, gxy);
+
+	opacity *= out.w;
 
 	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
 }

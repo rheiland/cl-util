@@ -54,7 +54,26 @@ float4 colorizei(int val, int2 range, int2 hues) {
 	return HSVtoRGB(hsv);
 }
 
+float4 val_f(float x, float2 range, float2 hues, float2 sats, float2 vals) {
+	float4 hsv;
 
+	if (x < range[0])
+		hsv = (float4) (0, 0, 0, 0);
+	else if (x > range[1])
+		hsv = (float4) (0, 0, 1, 0);
+	else {
+		float normalized = (x-range[0])/(range[1]-range[0]);
+
+		hsv = (float4) (
+			hues[0] + normalized*(hues[1]-hues[0]),
+			sats[0] + normalized*(sats[1]-sats[0]),
+			vals[0] + normalized*(vals[1]-vals[0]),
+			0
+			);
+	}
+
+	return HSVtoRGB(hsv);
+}
 
 __global kernel void colorize_i32(
 	int2 range,
@@ -96,6 +115,31 @@ __global kernel void colorize_f32(
 
 	float in = input[gxy.y*inputDim.x + gxy.x];
 	float4 out = colorizef(in, range, hues);
+
+	float4 read = read_imagef(rbo_read, sampler, gxy);
+
+	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
+}
+
+__global kernel void val_f32(
+	sampler_t sampler,
+	__read_only image2d_t rbo_read,
+	__write_only image2d_t rbo_write,
+	float opacity,
+	__global float* input,
+	int2 inputDim,
+	float2 range,
+	float2 hues,
+	float2 sats,
+	float2 vals
+) {
+	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
+
+	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
+		return;
+
+	float in = input[gxy.y*inputDim.x + gxy.x];
+	float4 out = val_f(in, range, hues, sats, vals);
 
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
