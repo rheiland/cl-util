@@ -25,9 +25,9 @@ float norm_length_ui(uint4 vector) {
 }
 
 __kernel void countEnemies(
-	__global int* labels,
-	__local int* s_labels,
-	__global int* g_enemies
+	__global uchar* labels,
+	__local uchar* s_labels,
+	__global uchar* g_enemies
 ){
 	int ix = get_global_id(0);
 	int iy = get_global_id(1);
@@ -52,9 +52,9 @@ __kernel void countEnemies(
 
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	int label = s_labels[sxy];
-	int4 neighbours = (int4) (s_labels[sxy-sw], s_labels[sxy+sw], s_labels[sxy-1], s_labels[sxy+1]);
-	int4 enemies = neighbours != label;
+	uchar label = s_labels[sxy];
+	uchar4 neighbours = (uchar4) (s_labels[sxy-sw], s_labels[sxy+sw], s_labels[sxy-1], s_labels[sxy+1]);
+	char4 enemies = neighbours != label;
 
 	g_enemies[ixy] = CL_TRUE_2_TRUE*(enemies.s0 + enemies.s1 + enemies.s2 + enemies.s3);
 }
@@ -65,19 +65,19 @@ float4 norm_rgba_ui4(uint4 rgba) {
 
 __kernel void evolveMoore(
 	__global int* tiles_list,
-	__global int* labels_in,
-	__global int* labels_out,
+	__global uchar* labels_in,
+	__global uchar* labels_out,
 	__global float* strength_in,
 	__global float* strength_out,
-	__global int* g_enemies,
+	__global uchar* g_enemies,
 	__global int* has_converge,
 	int iteration,
 	__global int* tiles,
 	__local int* tile_flags, //true if any updates
-	__local int* s_labels_in,
+	__local uchar* s_labels_in,
 	__local float* s_strength_in,
 	__local float4* s_img,
-	__local int* s_enemies,
+	__local uchar* s_enemies,
 	__read_only image2d_t img,
 	sampler_t sampler
 )
@@ -180,7 +180,7 @@ __kernel void evolveMoore(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	float4 c = s_img[sxy];
-	int label = s_labels_in[sxy];
+	uchar label = s_labels_in[sxy];
 	float defence = s_strength_in[sxy];
 
 	float8 attack = (float8) ( 
@@ -326,19 +326,19 @@ __kernel void evolveMoore(
 
 __kernel void evolveVonNeumann(
 	__global int* tiles_list,
-	__global int* labels_in,
-	__global int* labels_out,
+	__global uchar* labels_in,
+	__global uchar* labels_out,
 	__global float* strength_in,
 	__global float* strength_out,
-	__global int* g_enemies,
+	__global uchar* g_enemies,
 	__global int* has_converge,
 	int iteration,
 	__global int* tiles,
 	__local int* tile_flags, //true if any updates
-	__local int* s_labels_in,
+	__local uchar* s_labels_in,
 	__local float* s_strength_in,
 	__local float4* s_img,
-	__local int* s_enemies,
+	__local uchar* s_enemies,
 	__read_only image2d_t img,
 	sampler_t sampler
 )
@@ -408,7 +408,7 @@ __kernel void evolveVonNeumann(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	float4 c = s_img[sxy];
-	int label = s_labels_in[sxy];
+	uchar label = s_labels_in[sxy];
 	float defence = s_strength_in[sxy];
 
 	float4 attack = (float4) (

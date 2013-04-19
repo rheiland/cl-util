@@ -20,8 +20,9 @@ WEIGHT = '(1.0f - X/1.7320508075688772f)'
 class GrowCut():
 	lw = LWORKGROUP
 
-	VON_NEUMANN = 0
-	MOORE = 1
+	class NEIGHBOURHOOD:
+		VON_NEUMANN = 0
+		MOORE = 1
 
 	lWorksizeTiles16 = (16, 16)
 
@@ -34,7 +35,7 @@ class GrowCut():
 	CAN_ATTACK_THRESHOLD_DEAFULT = 6
 	OVER_POWER_THRESHOLD_DEFAULT = 6
 
-	def __init__(self, context, devices, img, neighbourhood=VON_NEUMANN, thresholdCanAttack=None, thresholdOverpowered=None, weight=None):
+	def __init__(self, context, devices, img, neighbourhood=NEIGHBOURHOOD.VON_NEUMANN, thresholdCanAttack=None, thresholdOverpowered=None, weight=None):
 		self.context = context
 
 		if thresholdCanAttack == None:
@@ -68,9 +69,9 @@ class GrowCut():
 
 		self.tilelist = IncrementalTileList(context, devices, shapeTiles)
 
-		self.hEnemiesIn = np.zeros(shapeNP,np.int32)
-		self.hLabelsIn = np.zeros(shapeNP,np.int32)
-		self.hLabelsOut = np.empty(shapeNP, np.int32)
+		self.hEnemiesIn = np.zeros(shapeNP,np.uint8)
+		self.hLabelsIn = np.zeros(shapeNP,np.uint8)
+		self.hLabelsOut = np.empty(shapeNP, np.int8)
 		self.hStrengthIn = np.zeros(shapeNP, np.float32)
 		self.hStrengthOut = np.zeros(shapeNP, np.float32)
 		self.hHasConverged = np.empty((1,), np.int32)
@@ -100,10 +101,10 @@ class GrowCut():
 			cl.LocalMemory(4*szFloat*(TILEW+2)*(TILEH+2)),
 			cl.LocalMemory(szInt*(TILEW+2)*(TILEH+2)),
 			self.dImg,
-			cl.Sampler(clContext, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
+			cl.Sampler(context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
 		]
 
-		self.gWorksize = roundUp(shapeCL, self.lw)
+		self.gWorksize = roundUp(dim, self.lw)
 		self.gWorksizeTiles16 = roundUp(dim, self.lWorksizeTiles16)
 
 		options = [
@@ -122,9 +123,9 @@ class GrowCut():
 		program = createProgram(context, devices, options, filename)
 
 		self.kernCountEnemies = cl.Kernel(program, 'countEnemies')
-		if neighbourhood == GrowCut.VON_NEUMANN:
+		if neighbourhood == GrowCut.NEIGHBOURHOOD.VON_NEUMANN:
 			self.kernEvolve = cl.Kernel(program, 'evolveVonNeumann')
-		elif neighbourhood == GrowCut.MOORE:
+		elif neighbourhood == GrowCut.NEIGHBOURHOOD.MOORE:
 			self.kernEvolve = cl.Kernel(program, 'evolveMoore')
 
 		self.isComplete = False
@@ -184,7 +185,7 @@ if __name__ == "__main__":
 	import functools
 	import Image
 	import sys
-	from PyQt4 import QtCore, QtGui, QtOpenGL
+	from PyQt4 import QtCore, QtGui
 	from CLWindow import CLWindow
 	from CLCanvas import CLCanvas, Filter
 	from Brush import Brush
@@ -215,14 +216,14 @@ if __name__ == "__main__":
 	)
 	cl.enqueue_copy(queue, dImg, hImg, origin=(0,0), region=shapeCL)
 
-	dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.int32)
+	dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.uint8)
 
-	growCut = GrowCut(clContext, devices, dImg, GrowCut.MOORE, 6, 6, GrowCut.WEIGHT_POW3)
+	growCut = GrowCut(clContext, devices, dImg, GrowCut.NEIGHBOURHOOD.MOORE, 6, 6, GrowCut.WEIGHT_DEFAULT)
 
 	brushArgs = [
 #		'__write_only image2d_t strokes',
-		'__global int* strokes',
-		'__global int* labels_in',
+		'__global uchar* strokes',
+		'__global uchar* labels_in',
 		'__global float* strength_in',
 		'__global int* tiles',
 		'int iteration',
@@ -295,12 +296,12 @@ if __name__ == "__main__":
 	colorize = Colorize(canvas)
 
 	#setup window
-	filter = colorize.factory((Buffer2D, np.int32), (0, 4))
+	filter = colorize.factory((Buffer2D, np.uint8), (0, 10), Colorize.HUES.STANDARD, (1, 1), (1, 1))
 	window.addLayer('strokes', dStrokes, 0.25, filter=filter)
 	window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
 	window.addLayer('image', dImg)
 
-	filter = colorize.factory((Buffer2D, np.int32), (0, 4))
+	filter = colorize.factory((Buffer2D, np.uint8), (0, 4))
 	window.addLayer('enemies', growCut.dEnemies, filter=filter)
 
 	filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
@@ -326,9 +327,9 @@ if __name__ == "__main__":
 				self.tileflags = tileflags
 
 			def execute(self, queue, args):
-				range = np.array([self.tileflags.iteration-1, self.tileflags.iteration], np.int32)
+				self.range = (self.tileflags.iteration-1, self.tileflags.iteration)
 
-				kernTileList(queue, growCut.gWorksizeTiles16, growCut.lWorksizeTiles16, range, self.hues, *args)
+				Colorize.Filter.execute(self, queue, args)
 
 		def __init__(self, canvas):
 			pass
@@ -337,7 +338,7 @@ if __name__ == "__main__":
 			if hues == None:
 				hues = Colorize.HUES.STANDARD
 
-			return TileListFilter.Filter((Buffer2D, np.int32), hues, tileflags)
+			return TileListFilter.Filter((Buffer2D, np.uint8), hues, tileflags)
 
 	tilelistfilter = TileListFilter(canvas)
 

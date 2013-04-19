@@ -33,7 +33,7 @@ class Brush(Tool):
 	def __init__(self, clContext, devices, arguments, code):
 		Tool.__init__(self)
 
-		self.radius = 10
+		self.radius = 4
 		self.color = Brush.DEFAULT_COLOR
 
 		filename = os.path.join(os.path.dirname(__file__), 'brush.cl')

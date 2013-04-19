@@ -176,6 +176,8 @@ def alignedDim(dim, dtype):
 
 	if dtype == np.int32 or dtype == np.uint32:
 		return roundUp(dim, 32)
+	if dtype == np.int8 or dtype == np.uint8:
+		return roundUp(dim, 32)
 	elif dtype == np.float32:
 		return roundUp(dim, 32)
 	else:
@@ -205,10 +207,7 @@ class Buffer2D(cl.Buffer):
 
 	@staticmethod
 	def fromBuffer(buffer, dim, dtype):
-		import numpy as np
-
-		buffer.dim = np.array(dim, np.int32)
+		buffer.dim = dim
 		buffer.dtype = dtype
-#		buffer.pad = np.array(pad, np.int32)
 
 		return buffer

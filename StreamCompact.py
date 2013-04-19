@@ -179,7 +179,7 @@ class IncrementalTileList():
 
 		args = [
 			self.dTiles,
-			self.dTiles.dim,
+			np.array(self.dTiles.dim, np.int32),
 			np.int32(self.initIteration)
 		]
 

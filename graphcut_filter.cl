@@ -26,30 +26,23 @@ float4 HSVtoRGB(float4 HSV)
         return (RGB);
 }
 
-float4 colorizef(float val, float2 range, int2 hues) {
-	if (val < range[0])
-		return (float4) (0, 0, 0, 0);
-	else if (val > range[1])
-		return (float4) (1, 1, 1, 1);
+float4 colorizef(float x, float2 range, float2 hues, float2 sats, float2 vals) {
+	float4 hsv;
 
-	float normalized = (val-range[0])/(range[1]-range[0]);
-	float hue = hues[0] + normalized*(hues[1]-hues[0]);
+	if (x < range[0])
+		hsv = (float4) (0, 0, 0, 0);
+	else if (x > range[1])
+		hsv = (float4) (0, 0, 1, 0);
+	else {
+		float normalized = (x-range[0])/(range[1]-range[0]);
 
-	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
-
-	return HSVtoRGB(hsv);
-}
-
-float4 colorizei(int val, int2 range, int2 hues) {
-	if (val < range[0])
-		return (float4) (0, 0, 0, 0);
-	else if (val > range[1])
-		return (float4) (1, 1, 1, 1);
-
-	float normalized = (float) (val-range[0])/(range[1]-range[0]);
-	float hue = hues[0] + normalized*(hues[1]-hues[0]);
-
-	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
+		hsv = (float4) (
+			hues[0] + normalized*(hues[1]-hues[0]),
+			sats[0] + normalized*(sats[1]-sats[0]),
+			vals[0] + normalized*(vals[1]-vals[0]),
+			0
+			);
+	}
 
 	return HSVtoRGB(hsv);
 }
@@ -62,14 +55,16 @@ float4 colorizei(int val, int2 range, int2 hues) {
 #define TILE_SIZE 32
 
 __kernel void tranpose(
-	float2 range,
-	int2 hues,
 	sampler_t sampler,
 	__read_only image2d_t rbo_read,
 	__write_only image2d_t rbo_write,
 	float opacity,
 	__global float* input,
-	int2 inputDim
+	int2 inputDim,
+	float2 range,
+	float2 hues,
+	float2 sats,
+	float2 vals
 ) {
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
@@ -95,7 +90,7 @@ __kernel void tranpose(
 
 	for (int i=0; i<WAVE_LENGTH; i++) {
 		float in = input[ixy];
-		float4 out = colorizef(in, range, hues);
+		float4 out = colorizef(in, range, hues, (float2) (1, 1), (float2) (1, 1));
 
 		float4 read = read_imagef(rbo_read, sampler, ixyT);
 
@@ -107,13 +102,16 @@ __kernel void tranpose(
 }
 
 __kernel void tilelist(
-	int2 range,
-	int2 hues,
 	sampler_t sampler,
 	__read_only image2d_t rbo_read,
 	__write_only image2d_t rbo_write,
 	float opacity,
-	__global int* input
+	__global int* input,
+	int2 inputDim,
+	int2 range,
+	float2 hues,
+	float2 sats,
+	float2 vals
 ) {
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
@@ -121,7 +119,7 @@ __kernel void tilelist(
 
 	int bxy = (gy/WORKGROUP_LENGTH)*TILESW + gx/WAVE_BREDTH;
 	int in = input[bxy];
-	float4 out = colorizei(in, range, hues);
+	float4 out = colorizef((float) in, (float2) range, hues, sats, vals);
 
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
@@ -132,13 +130,16 @@ __kernel void tilelist(
 #define TILEH 16
 
 __kernel void tilelist_growcut(
-	int2 range,
-	int2 hues,
 	sampler_t sampler,
 	__read_only image2d_t rbo_read,
 	__write_only image2d_t rbo_write,
 	float opacity,
-	__global int* input
+	__global int* input,
+	int2 inputDim,
+	int2 range,
+	float2 hues,
+	float2 sats,
+	float2 vals
 ) {
 	int gx = get_global_id(0);
 	int gy = get_global_id(1);
@@ -146,7 +147,7 @@ __kernel void tilelist_growcut(
 
 	int bxy = (gy/TILEH)*TILESW + gx/TILEW;
 	int in = input[bxy];
-	float4 out = colorizei(in, range, hues);
+	float4 out = colorizef((float) in, (float2) range, hues, sats, vals);
 
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
