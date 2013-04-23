@@ -1,8 +1,7 @@
 import os
 import numpy as np
 import pyopencl as cl
-import msclib.clutil as clutil
-import sys
+from clutil import createProgram, roundUp, ceil_divi, pow2gt
 
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
@@ -19,7 +18,7 @@ DEBUG = False
 class PrefixSum:
 	def __init__(self, context, devices, capacity):
 		filename = os.path.join(os.path.dirname(__file__), 'scan/harris/scan.cl')
-		program = clutil.createProgram(context, devices, [], filename)
+		program = createProgram(context, devices, [], filename)
 		self.context = context
 		self.kernScan_pad_to_pow2 = cl.Kernel(program, 'scan_pad_to_pow2')
 		self.kernScan_subarrays = cl.Kernel(program, 'scan_subarrays')
@@ -27,7 +26,7 @@ class PrefixSum:
 
 		self.lw = (LEN_WORKGROUP, )
 
-		self.capacity = clutil.roundUp(capacity, ELEMENTS_PER_WORKGROUP)
+		self.capacity = roundUp(capacity, ELEMENTS_PER_WORKGROUP)
 
 		nBytes = szInt*capacity
 
@@ -44,7 +43,7 @@ class PrefixSum:
 		elif length > self.capacity:
 			raise ValueError('length > self.capacity: {0}, {1}'.format(length, self.capacity))
 
-		length = clutil.pow2gt(length)
+		length = pow2gt(length)
 
 		return cl.Buffer(self.context, cl.mem_flags.READ_WRITE, length*szInt)
 
@@ -53,7 +52,7 @@ class PrefixSum:
 		if length == None:
 			length = dArray.size/szInt
 
-		k = clutil.ceil_divi(length, ELEMENTS_PER_WORKGROUP)
+		k = ceil_divi(length, ELEMENTS_PER_WORKGROUP)
 		gw = (k*LEN_WORKGROUP, )
 
 		if DEBUG:

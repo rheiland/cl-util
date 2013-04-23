@@ -1,9 +1,7 @@
 import os
 import numpy as np
 import pyopencl as cl
-import msclib.clutil as clutil
-from clutil import Buffer2D, alignedDim
-import sys
+from clutil import Buffer2D, roundUp, createProgram
 import PrefixSum
 
 szFloat = np.dtype(np.float32).itemsize
@@ -29,7 +27,7 @@ class StreamCompact():
 		self.capacity = capacity
 
 		filename = os.path.join(os.path.dirname(__file__), 'streamcompact.cl')
-		program = clutil.createProgram(context, devices, [], filename)
+		program = createProgram(context, devices, [], filename)
 
 		self.kernCompact = cl.Kernel(program, 'compact')
 
@@ -69,7 +67,7 @@ class StreamCompact():
 			np.int32(length)
 		]
 
-		gw = clutil.roundUp((length, ), self.lw)
+		gw = roundUp((length, ), self.lw)
 
 		self.kernCompact(queue, gw, self.lw, *args).wait()
 
@@ -93,7 +91,7 @@ class IncrementalTileList():
 		self.dFlags = Buffer2D.fromBuffer(self.streamCompact.flagFactory(), shape, np.int32)
 
 		filename = os.path.join(os.path.dirname(__file__), 'streamcompact.cl')
-		program = clutil.createProgram(context, devices, [], filename)
+		program = createProgram(context, devices, [], filename)
 
 		self.kernFlag = cl.Kernel(program, 'flag')
 		self.kernFlagLogcal = cl.Kernel(program, 'flagLogical')
@@ -123,7 +121,7 @@ class IncrementalTileList():
 
 		length = self.dTiles.size/szInt
 
-		gw = clutil.roundUp((length, ), IncrementalTileList.lw)
+		gw = roundUp((length, ), IncrementalTileList.lw)
 		args = [
 			self.dTiles,
 			self.dFlags,
@@ -139,7 +137,7 @@ class IncrementalTileList():
 	def incorporate(self, dTiles2, operator1, operand1, operator2, operand2, logical):
 		length = self.dTiles.size/szInt
 
-		gw = clutil.roundUp((length, ), IncrementalTileList.lw)
+		gw = roundUp((length, ), IncrementalTileList.lw)
 		args = [
 			self.dTiles,
 			dTiles2,
@@ -157,7 +155,7 @@ class IncrementalTileList():
 	def buildLogical(self, dTiles2, operator1, operand1, operator2, operand2, logical):
 		length = self.dTiles.size/szInt
 
-		gw = clutil.roundUp((length, ), IncrementalTileList.lw)
+		gw = roundUp((length, ), IncrementalTileList.lw)
 		args = [
 			self.dTiles,
 			dTiles2,
@@ -183,7 +181,7 @@ class IncrementalTileList():
 			np.int32(self.initIteration)
 		]
 
-		gw = clutil.roundUp(self.shape, LWORKGROUP_2D)
+		gw = roundUp(self.shape, LWORKGROUP_2D)
 
 		self.kernInit(self.queue, gw, LWORKGROUP_2D, *args).wait()
 

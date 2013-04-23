@@ -2,11 +2,12 @@ __author__ = 'Marc de Klerk'
 
 import pyopencl as cl
 import numpy as np
-import os
+import os, sys
 from clutil import roundUp, padArray2D, createProgram, Buffer2D
 from StreamCompact import StreamCompact, IncrementalTileList
 
 LWORKGROUP = (16, 16)
+LWORKGROUP_1D = (256, )
 
 cm = cl.mem_flags
 szFloat = np.dtype(np.float32).itemsize
@@ -18,343 +19,281 @@ TILEH = 16
 WEIGHT = '(1.0f - X/1.7320508075688772f)'
 
 class GrowCut():
-	lw = LWORKGROUP
+    lw = LWORKGROUP
 
-	class NEIGHBOURHOOD:
-		VON_NEUMANN = 0
-		MOORE = 1
+    class NEIGHBOURHOOD:
+        VON_NEUMANN = 0
 
-	lWorksizeTiles16 = (16, 16)
+    lWorksizeTiles16 = (16, 16)
 
-	WEIGHT_DEFAULT  = '(1.0f-X/1.7320508075688772f)'
-	WEIGHT_POW2     = '(1.0f-pown(X/1.7320508075688772f,2))'
-	WEIGHT_POW3     = '(1.0f-pown(X/1.7320508075688772f,3))'
-	WEIGHT_POW1_5   = '(1.0f-pow(X/1.7320508075688772f,1.5))'
-	WEIGHT_POW_SQRT = '(1.0f-sqrt(X/1.7320508075688772f))'
+    WEIGHT_DEFAULT = '(1.0f-X/1.7320508075688772f)'
+    WEIGHT_POW2 = '(1.0f-pown(X/1.7320508075688772f,2))'
+    WEIGHT_POW3 = '(1.0f-pown(X/1.7320508075688772f,3))'
+    WEIGHT_POW1_5 = '(1.0f-pow(X/1.7320508075688772f,1.5))'
+    WEIGHT_POW_SQRT = '(1.0f-sqrt(X/1.7320508075688772f))'
 
-	CAN_ATTACK_THRESHOLD_DEAFULT = 6
-	OVER_POWER_THRESHOLD_DEFAULT = 6
+    def __init__(self, context, devices, img, neighbourhood=NEIGHBOURHOOD.VON_NEUMANN, weight=None):
+        self.context = context
+        self.queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-	def __init__(self, context, devices, img, neighbourhood=NEIGHBOURHOOD.VON_NEUMANN, thresholdCanAttack=None, thresholdOverpowered=None, weight=None):
-		self.context = context
+        if weight == None:
+            weight = GrowCut.WEIGHT_DEFAULT
 
-		if thresholdCanAttack == None:
-			thresholdCanAttack = GrowCut.CAN_ATTACK_THRESHOLD_DEAFULT
-		if thresholdOverpowered == None:
-			thresholdOverpowered = GrowCut.OVER_PROWER_THRESHOLD_DEFAULT
-		if weight == None:
-			weight = GrowCut.WEIGHT_DEFAULT
+        if type(img) == cl.GLBuffer:
+            raise ValueError('CL Buffer')
+        elif type(img) == np.ndarray:
+            raise NotImplementedError('NP arrays')
+        elif type(img) == cl.GLTexture:
+            raise NotImplementedError('GL Texture')
+        elif type(img) == cl.Image:
+            self.dImg = img
 
-		if type(img) == cl.GLBuffer:
-				raise ValueError('CL Buffer')
-		elif type(img) == np.ndarray:
-			raise NotImplementedError('NP arrays')
-		elif type(img) == cl.GLTexture:
-			raise NotImplementedError('GL Texture')
-		elif type(img) == cl.Image:
-			self.dImg = img
+            width = img.get_image_info(cl.image_info.WIDTH)
+            height = img.get_image_info(cl.image_info.HEIGHT)
 
-			width = img.get_image_info(cl.image_info.WIDTH)
-			height = img.get_image_info(cl.image_info.HEIGHT)
+            dim = (width, height)
 
-			shapeNP = (height, width)
-			dim = (width, height)
+        shapeTiles = (dim[0] / TILEW, dim[1] / TILEH)
 
-		tilesW = dim[0]/TILEW
-		tilesH = dim[1]/TILEH
+        streamCompact = StreamCompact(context, devices, shapeTiles[0] * shapeTiles[1])
 
-		streamCompact = StreamCompact(context, devices, tilesW*tilesH)
+        self.tilelist = IncrementalTileList(context, devices, shapeTiles)
 
-		shapeTiles = (tilesW, tilesH)
+        self.hHasConverged = np.empty((1,), np.int32)
+        self.hHasConverged[0] = False
 
-		self.tilelist = IncrementalTileList(context, devices, shapeTiles)
+        self.dLabelsIn = Buffer2D(context, cm.READ_WRITE, dim, np.uint8)
+        self.dLabelsOut = Buffer2D(context, cm.READ_WRITE, dim, np.uint8)
+        self.dStrengthIn = Buffer2D(context, cm.READ_WRITE, dim, np.float32)
+        self.dStrengthOut = Buffer2D(context, cm.READ_WRITE, dim, np.float32)
+        self.dHasConverged = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=self.hHasConverged)
 
-		self.hEnemiesIn = np.zeros(shapeNP,np.uint8)
-		self.hLabelsIn = np.zeros(shapeNP,np.uint8)
-		self.hLabelsOut = np.empty(shapeNP, np.int8)
-		self.hStrengthIn = np.zeros(shapeNP, np.float32)
-		self.hStrengthOut = np.zeros(shapeNP, np.float32)
-		self.hHasConverged = np.empty((1,), np.int32)
+        self.args = [
+            self.tilelist.dList,
+            self.dLabelsIn,
+            self.dLabelsOut,
+            self.dStrengthIn,
+            self.dStrengthOut,
+            self.dHasConverged,
+            np.int32(self.tilelist.iteration),
+            self.tilelist.dTiles,
+            cl.LocalMemory(szInt * 9),
+            cl.LocalMemory(szInt * (TILEW + 2) * (TILEH + 2)),
+            cl.LocalMemory(szFloat * (TILEW + 2) * (TILEH + 2)),
+            #			cl.LocalMemory(4*szFloat*(TILEW+2)*(TILEH+2)),
+            self.dImg,
+            cl.Sampler(context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
+        ]
 
-		self.hHasConverged[0] = False
+        self.gWorksize = roundUp(dim, self.lw)
+        self.gWorksizeTiles16 = roundUp(dim, self.lWorksizeTiles16)
 
-		self.dEnemies = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hEnemiesIn)
-		self.dLabelsIn = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsIn)
-		self.dLabelsOut = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hLabelsOut)
-		self.dStrengthIn = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthIn)
-		self.dStrengthOut = Buffer2D(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hStrengthOut)
-		self.dHasConverged = cl.Buffer(context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hHasConverged)
+        options = [
+            '-D TILESW=' + str(shapeTiles[0]),
+            '-D TILESH=' + str(shapeTiles[1]),
+            '-D IMAGEW=' + str(dim[0]),
+            '-D IMAGEH=' + str(dim[1]),
+            '-D TILEW=' + str(TILEW),
+            '-D TILEH=' + str(TILEH),
+            '-D G_NORM(X)=' + weight
+        ]
 
-		self.args = [
-			self.tilelist.dList,
-			self.dLabelsIn,
-			self.dLabelsOut,
-			self.dStrengthIn,
-			self.dStrengthOut,
-			self.dEnemies,
-			self.dHasConverged,
-			np.int32(self.tilelist.iteration),
-			self.tilelist.dTiles,
-			cl.LocalMemory(szInt*9),
-			cl.LocalMemory(szInt*(TILEW+2)*(TILEH+2)),
-			cl.LocalMemory(szFloat*(TILEW+2)*(TILEH+2)),
-			cl.LocalMemory(4*szFloat*(TILEW+2)*(TILEH+2)),
-			cl.LocalMemory(szInt*(TILEW+2)*(TILEH+2)),
-			self.dImg,
-			cl.Sampler(context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST)
-		]
+        filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
+        program = createProgram(context, devices, options, filename)
 
-		self.gWorksize = roundUp(dim, self.lw)
-		self.gWorksizeTiles16 = roundUp(dim, self.lWorksizeTiles16)
+        if neighbourhood == GrowCut.NEIGHBOURHOOD.VON_NEUMANN:
+            self.kernEvolve = cl.Kernel(program, 'evolveVonNeumann')
+        elif neighbourhood == GrowCut.NEIGHBOURHOOD.MOORE:
+            self.kernEvolve = cl.Kernel(program, 'evolveMoore')
 
-		options = [
-			'-D CAN_ATTACK_THRESHOLD='+str(thresholdCanAttack),
-			'-D OVER_PROWER_THRESHOLD='+str(thresholdOverpowered),
-			'-D TILESW='+str(tilesW),
-			'-D TILESH='+str(tilesH),
-			'-D IMAGEW='+str(dim[0]),
-			'-D IMAGEH='+str(dim[1]),
-			'-D TILEW='+str(TILEW),
-			'-D TILEH='+str(TILEH),
-			'-D G_NORM(X)='+weight
-		]
+        self.kernLabel = cl.Kernel(program, 'label')
 
-		filename = os.path.join(os.path.dirname(__file__), 'growcut.cl')
-		program = createProgram(context, devices, options, filename)
+        self.isComplete = False
 
-		self.kernCountEnemies = cl.Kernel(program, 'countEnemies')
-		if neighbourhood == GrowCut.NEIGHBOURHOOD.VON_NEUMANN:
-			self.kernEvolve = cl.Kernel(program, 'evolveVonNeumann')
-		elif neighbourhood == GrowCut.NEIGHBOURHOOD.MOORE:
-			self.kernEvolve = cl.Kernel(program, 'evolveMoore')
+    def label(self, d_points, n_points, label):
+        gWorksize = roundUp((n_points, ), LWORKGROUP_1D)
 
-		self.isComplete = False
+        args = [
+            self.dLabelsIn,
+            self.dStrengthIn,
+            d_points,
+            np.uint8(label),
+            np.int32(n_points),
+            self.tilelist.dTiles,
+            np.int32(self.tilelist.iteration)
+        ]
 
-	def evolve(self, queue):
-		self.isComplete = False
+        self.kernLabel(self.queue, gWorksize, LWORKGROUP_1D, *args).wait()
 
-		self.tilelist.build()
 
-		if self.tilelist.length == 0:
-			self.isComplete = True
-			return
+    def evolve(self, iterations=sys.maxint):
+        self.isComplete = False
 
-		argsCount = [
-			self.dLabelsIn,
-			cl.LocalMemory(szInt*(self.lw[0]+2)*(self.lw[1]+2)),
-			self.dEnemies
-		]
+        self.tilelist.build()
 
-#		elapsed = 0;
-		event = self.kernCountEnemies(queue, self.gWorksize, self.lw, *argsCount)
-		event.wait()
-#		elapsed += event.profile.end - event.profile.start
-#		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
+        if self.tilelist.length == 0:
+            self.isComplete = True
+            return
 
-		self.tilelist.increment()
+        self.tilelist.increment()
 
-		self.args[1] = self.dLabelsIn
-		self.args[2] = self.dLabelsOut
-		self.args[3] = self.dStrengthIn
-		self.args[4] = self.dStrengthOut
+        gWorksize = (TILEW * self.tilelist.length, TILEH)
 
-		self.args[7] = np.int32(self.tilelist.iteration)
+        self.args[1] = self.dLabelsIn
+        self.args[2] = self.dLabelsOut
+        self.args[3] = self.dStrengthIn
+        self.args[4] = self.dStrengthOut
+        self.args[6] = np.int32(self.tilelist.iteration)
 
-#		elapsed = 0;
-		gWorksize = (TILEW*self.tilelist.length, TILEH)
-		lWorksize = self.lWorksizeTiles16
-#		gWorksize = self.gWorksize
-#		lWorksize = self.lw
-		event = self.kernEvolve(queue, gWorksize, lWorksize, *self.args)
-		event.wait()
-#		elapsed += event.profile.end - event.profile.start
-#		print 'Execution time of test: {0} ms'.format(1e-6*elapsed)
+        self.kernEvolve(self.queue, gWorksize, self.lWorksizeTiles16, *self.args).wait()
 
-		cl.enqueue_copy(queue, self.hLabelsOut, self.dLabelsOut).wait()
-		cl.enqueue_copy(queue, self.hStrengthOut, self.dStrengthOut).wait()
+        dTmp = self.dLabelsOut
+        self.dLabelsOut = self.dLabelsIn
+        self.dLabelsIn = dTmp
 
-		dTmp = self.dLabelsOut
-		self.dLabelsOut = self.dLabelsIn
-		self.dLabelsIn = dTmp
-
-		dTmp = self.dStrengthOut
-		self.dStrengthOut = self.dStrengthIn
-		self.dStrengthIn = dTmp
+        dTmp = self.dStrengthOut
+        self.dStrengthOut = self.dStrengthIn
+        self.dStrengthIn = dTmp
 
 if __name__ == "__main__":
-	import functools
-	import Image
-	import sys
-	from PyQt4 import QtCore, QtGui
-	from CLWindow import CLWindow
-	from CLCanvas import CLCanvas, Filter
-	from Brush import Brush
-	from Colorize import Colorize
+    import functools
+    import Image
+    import sys
+    from PyQt4 import QtCore, QtGui
+    from CLWindow import CLWindow
+    from CLCanvas import CLCanvas, Filter
+    from Brush import Brush
+    from Colorize import Colorize
 
-	img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
-	if img.mode != 'RGBA':
-		img = img.convert('RGBA')
+    img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
 
-	app = QtGui.QApplication(sys.argv)
-	canvas = CLCanvas(img.size)
-	window = CLWindow(canvas)
+    app = QtGui.QApplication(sys.argv)
+    canvas = CLCanvas(img.size)
+    window = CLWindow(canvas)
 
-	clContext = canvas.context
-	devices = clContext.get_info(cl.context_info.DEVICES)
-	queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
+    clContext = canvas.context
+    devices = clContext.get_info(cl.context_info.DEVICES)
+    queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-	shapeNP = (img.size[1], img.size[0])
-	shapeNP = roundUp(shapeNP, GrowCut.lw)
-	shapeCL = (shapeNP[1], shapeNP[0])
+    shapeNP = (img.size[1], img.size[0])
+    shapeNP = roundUp(shapeNP, GrowCut.lw)
+    shapeCL = (shapeNP[1], shapeNP[0])
 
-	hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
+    hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-	dImg = cl.Image(clContext,
-		cl.mem_flags.READ_ONLY,
-		cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
-		shapeCL
-	)
-	cl.enqueue_copy(queue, dImg, hImg, origin=(0,0), region=shapeCL)
+    dImg = cl.Image(clContext,
+        cl.mem_flags.READ_ONLY,
+        cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
+        shapeCL
+    )
+    cl.enqueue_copy(queue, dImg, hImg, origin=(0, 0), region=shapeCL)
 
-	dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.uint8)
+    dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.uint8)
 
-	growCut = GrowCut(clContext, devices, dImg, GrowCut.NEIGHBOURHOOD.MOORE, 6, 6, GrowCut.WEIGHT_DEFAULT)
+    from Brush import Brush
+    brush = Brush(clContext, devices, dStrokes)
 
-	brushArgs = [
-#		'__write_only image2d_t strokes',
-		'__global uchar* strokes',
-		'__global uchar* labels_in',
-		'__global float* strength_in',
-		'__global int* tiles',
-		'int iteration',
-		'int label',
-		'int canvasW'
-	]
-#	brushCode = 'write_imagef(strokes, gcoord, rgba2f4(label)/255.0f);\n'
-	brushCode = 'strokes[gcoord.y*canvasW + gcoord.x] = label;\n'
-	brushCode += 'strength_in[gcoord.y*canvasW + gcoord.x] = 1;\n'
-	brushCode += 'labels_in[gcoord.y*canvasW + gcoord.x] = label;\n'
-	brushCode += 'tiles[(gcoord.y/{0})*{1} + gcoord.x/{2}] = iteration;\n'.format(TILEH, growCut.tilelist.shape[0], TILEW)
+    growCut = GrowCut(clContext, devices, dImg, GrowCut.NEIGHBOURHOOD.VON_NEUMANN, GrowCut.WEIGHT_DEFAULT)
 
-	brush = Brush(clContext, devices, brushArgs, brushCode)
 
-	label = 1
+    label = 1
 
-	iteration = 0
-	refresh = 100
+    iteration = 0
+    refresh = 100
 
-	def next():
-		global iteration
+    def update():
+        global iteration
 
-		growCut.evolve(queue)
+        growCut.evolve(1)
 
-		if growCut.isComplete:
-			timer.stop()
+        if growCut.isComplete:
+            window.updateCanvas()
+            timer.stop()
+            return
 
-			window.updateCanvas()
+        if iteration % refresh == 0:
+            window.updateCanvas()
 
-		if iteration % refresh == 0:
-			window.updateCanvas()
+        iteration += 1
 
-		iteration += 1
+    def mouseDrag(pos1, pos2):
+        if pos1 == pos2:
+            return
 
-	def mouseDrag(pos1, pos2):
-		if pos1 == pos2:
-			return
+        timer.stop()
+        brush.draw(pos1, pos2)
+        growCut.label(brush.d_points, brush.n_points, brush.label)
 
-		timer.stop()
-		brush.draw_gpu(queue, [dStrokes, growCut.dLabelsIn, growCut.dStrengthIn, growCut.tilelist.dTiles, np.int32(growCut.tilelist.iteration), np.int32(label), np.int32(shapeNP[1])], pos1, pos2)
-		queue.finish()
-		timer.start()
+        window.updateCanvas()
 
-		window.updateCanvas()
+        timer.start()
 
-	def mousePress(pos):
-		timer.stop()
-		brush.draw_gpu(queue, [dStrokes, growCut.dLabelsIn, growCut.dStrengthIn, growCut.tilelist.dTiles, np.int32(growCut.tilelist.iteration), np.int32(label), np.int32(shapeNP[1])], pos)
-		queue.finish()
-		timer.start()
+    def mousePress(pos):
+        mouseDrag(pos, None)
 
-		window.updateCanvas()
+    def keyPress(key):
+        global label
 
-	def keyPress(key):
-		global label
+        if key == QtCore.Qt.Key_1: brush.setLabel(0)
+        elif key == QtCore.Qt.Key_2: brush.setLabel(1)
+        elif key == QtCore.Qt.Key_3: brush.setLabel(2)
 
-		if key   == QtCore.Qt.Key_0: label = 0
-		elif key == QtCore.Qt.Key_1: label = 1
-		elif key == QtCore.Qt.Key_2: label = 2
-		elif key == QtCore.Qt.Key_3: label = 3
-		elif key == QtCore.Qt.Key_4: label = 4
-		elif key == QtCore.Qt.Key_5: label = 5
-		elif key == QtCore.Qt.Key_6: label = 6
-		elif key == QtCore.Qt.Key_7: label = 7
-		elif key == QtCore.Qt.Key_8: label = 8
+    timer = QtCore.QTimer()
+    timer.timeout.connect(update)
 
-	timer = QtCore.QTimer()
-	timer.timeout.connect(next)
+    colorize = Colorize(canvas)
 
-	colorize = Colorize(canvas)
+    #setup window
+    filter = colorize.factory((Buffer2D, np.uint8), (0, 3), Colorize.HUES.STANDARD, (1, 1), (1, 1))
+#    window.addLayer('labels', growCut.dLabelsIn, 0.5, filter=filter)
+    window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
+    window.addLayer('strokes', dStrokes, 0.25, filter=filter)
+    window.addLayer('image', dImg)
 
-	#setup window
-	filter = colorize.factory((Buffer2D, np.uint8), (0, 10), Colorize.HUES.STANDARD, (1, 1), (1, 1))
-	window.addLayer('strokes', dStrokes, 0.25, filter=filter)
-	window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
-	window.addLayer('image', dImg)
+    filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
+    window.addLayer('strength', growCut.dStrengthIn, 1.0, filter=filter)
 
-	filter = colorize.factory((Buffer2D, np.uint8), (0, 4))
-	window.addLayer('enemies', growCut.dEnemies, filter=filter)
+    options = [
+        '-D IMAGEW={0}'.format(shapeCL[0]),
+        '-D IMAGEH={0}'.format(shapeCL[1]),
+        '-D TILESW=' + str(growCut.tilelist.shape[0]),
+        '-D TILESH=' + str(growCut.tilelist.shape[1])
+    ]
 
-	filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
-	window.addLayer('strength', growCut.dStrengthIn, 1.0, filter=filter)
+    filename = os.path.join(os.path.dirname(__file__), 'graphcut_filter.cl')
+    program = createProgram(canvas.context, canvas.devices, options, filename)
 
-	options = [
-		'-D IMAGEW={0}'.format(shapeCL[0]),
-		'-D IMAGEH={0}'.format(shapeCL[1]),
-		'-D TILESW='+str(growCut.tilelist.shape[0]),
-		'-D TILESH='+str(growCut.tilelist.shape[1])
-	]
+    kernTileList = cl.Kernel(program, 'tilelist_growcut')
 
-	filename = os.path.join(os.path.dirname(__file__), 'graphcut_filter.cl')
-	program = createProgram(canvas.context, canvas.devices, options, filename)
+    class TileListFilter():
+        def execute(self, queue, args):
+            buf = args[-1]
+            args.append(np.array(buf.dim, np.int32))
 
-	kernTileList = cl.Kernel(program, 'tilelist_growcut')
+            args += [
+                np.array([growCut.tilelist.iteration - 1, growCut.tilelist.iteration], np.float32),
+                np.array(Colorize.HUES.REVERSED, np.float32),
+                np.array([1, 1], np.float32),
+                np.array([1, 1], np.float32),
+                ]
+            kernTileList(queue, growCut.gWorksizeTiles16, growCut.lWorksizeTiles16, *args)
 
-	class TileListFilter():
-		class Filter(Colorize.Filter):
-			def __init__(self, format, hues, tileflags):
-				Colorize.Filter.__init__(self, kernTileList, format, (0, tileflags.iteration), hues)
+    tilelistfilter = TileListFilter()
 
-				self.tileflags = tileflags
+    window.addLayer('tiles', growCut.tilelist.dTiles, filter=tilelistfilter)
 
-			def execute(self, queue, args):
-				self.range = (self.tileflags.iteration-1, self.tileflags.iteration)
+    window.addButton("start", functools.partial(timer.start, 0))
+    window.addButton('next', next)
+    window.setMousePress(mousePress)
+    window.setMouseDrag(mouseDrag)
+    window.setKeyPress(keyPress)
 
-				Colorize.Filter.execute(self, queue, args)
+    #	growCut.tilelist.flag(StreamCompact.OPERATOR_GTE, -1)
 
-		def __init__(self, canvas):
-			pass
+    #	timer.start()
 
-		def factory(self, tileflags, hues=None):
-			if hues == None:
-				hues = Colorize.HUES.STANDARD
-
-			return TileListFilter.Filter((Buffer2D, np.uint8), hues, tileflags)
-
-	tilelistfilter = TileListFilter(canvas)
-
-	filter = tilelistfilter.factory(growCut.tilelist, hues=Colorize.HUES.REVERSED)
-	window.addLayer('tiles', growCut.tilelist.dTiles, filter=filter)
-
-	window.addButton("start", functools.partial(timer.start, 0))
-	window.addButton('next', next)
-	window.setMousePress(mousePress)
-	window.setMouseDrag(mouseDrag)
-	window.setKeyPress(keyPress)
-
-#	growCut.tilelist.flag(StreamCompact.OPERATOR_GTE, -1)
-
-#	timer.start()
-
-	window.resize(1000, 700)
-	window.show()
-	sys.exit(app.exec_())
+    window.resize(1000, 700)
+    window.show()
+    sys.exit(app.exec_())
