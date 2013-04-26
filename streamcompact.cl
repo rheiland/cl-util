@@ -78,7 +78,7 @@ __kernel void flag(
 	out[gx] = flag;
 }
 
-__kernel void flagLogical(
+__kernel void flag_logical(
 	__global int* in1,
 	__global int* in2,
 	__global int* out,
@@ -122,7 +122,7 @@ __kernel void flagLogical(
 	out[gx] = flag1;
 }
 
-__kernel void incrementLogical(
+__kernel void increment_logical(
 	__global int* in1,
 	__global int* in2,
 	__global int* out,

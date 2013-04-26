@@ -19,9 +19,9 @@ TRI_FG_PNG = 0xFF0000FF
 TRI_BG_PNG = 0xFFFF0000
 TRI_UK_PNG = 0xFF00FF00
 
-TRI_UK = 0
-TRI_FG = 1
-TRI_BG = 2
+TRI_FG = 0
+TRI_BG = 1
+TRI_UK = 2
 
 class SharedMatting():
     lw = LWORKGROUP
@@ -37,9 +37,7 @@ class SharedMatting():
             '-D IMAGEH='+str(self.dim[1]),
             ]
 
-#    hTri = padArray2D(trimapPngToCharBuf(np.array(tri).view(np.uint32).squeeze()), shape, 'edge')
         self.dImg = dImg
-#        self.dTri = Buffer2D(context, cm.READ_WRITE, self.dim, np.int32)
         self.dFg = Buffer2D(context, cl.mem_flags.READ_WRITE, self.dim, np.uint32)
         self.dBg = Buffer2D(context, cl.mem_flags.READ_WRITE, self.dim, np.uint32)
         self.dLcv = Buffer2D(context, cl.mem_flags.READ_WRITE, self.dim, np.float32)
@@ -159,7 +157,7 @@ if __name__ == "__main__":
     growCut = GrowCut(context, devices, dImgGC, GrowCut.NEIGHBOURHOOD.VON_NEUMANN, GrowCut.WEIGHT_POW2)
 
     brush = Brush(context, devices, growCut.dLabelsIn)
-    brush.setLabel(TRI_FG)
+    brush.setLabel(TRI_BG)
 
     iteration = 0
     refresh = 100
@@ -168,7 +166,7 @@ if __name__ == "__main__":
         global iteration
 
         growCut.evolve(1)
-        sm.processTrimap(dStrokes, growCut.dLabelsOut, growCut.dStrengthIn, 0.985)
+        sm.processTrimap(dStrokes, growCut.dLabelsOut, growCut.dStrengthIn, 0.95)
 
         if growCut.isComplete:
             window.updateCanvas()
@@ -180,9 +178,9 @@ if __name__ == "__main__":
 #            return
 #
         if iteration % refresh == 0:
-            sm.processTrimap(dStrokes, growCut.dLabelsOut, growCut.dStrengthIn, 0.985)
+            sm.processTrimap(dStrokes, growCut.dLabelsOut, growCut.dStrengthIn, 0.95)
 #
-#            sm.calcMatte(growCut.dLabelsOut)
+            sm.calcMatte(growCut.dLabelsOut)
             window.updateCanvas()
 #            pass
 
@@ -224,26 +222,26 @@ if __name__ == "__main__":
     colorize = Colorize(canvas)
 
 #    	filter = colorize.factory((Buffer2D, np.int32), (0, 4), Colorize.HUES.STANDARD, (1, 1), (1, 1))
-    window.addLayer('strokes', dStrokes, 0.25, filter=sm)
+    window.addLayer('strokes', dStrokes, 0.0, filter=sm)
     #	growCut.dLabelsOut.dtype = np.uint32
     #	window.addLayer('labels', growCut.dLabelsOut, 1.0)
 
     #	filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
     #	window.addLayer('strength', growCut.dStrengthIn, 1.0, filter=filter)
 
-    window.addLayer('tri', growCut.dLabelsOut, 1.0, filter=sm)
+    window.addLayer('tri', growCut.dLabelsOut, 0.0, filter=sm)
 #    window.addLayer('tri', growCut.dLabelsIn, 1.0, filter=sm)
 
     filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), (0, 0), (0, 0), (0, 1))
 #    window.addLayer('alpha', sm.dAlpha, 1.0, filter=filter)
 
-#    window.addLayer('fg', sm.dFg)
+    window.addLayer('fg', sm.dFg)
     #	window.addLayer('bg', sm.dBg)
 
     #	filter = colorize.factory((Buffer2D, np.float32), (0, 5000), hues=Colorize.HUES.REVERSED)
     #	window.addLayer('lcv', sm.dLcv, 1.0, filter=filter)
 
-    window.addLayer('image', dImg, 0.25)
+    window.addLayer('image', dImg, 0.1)
 
     window.setMousePress(mousePress)
     window.setMouseDrag(mouseDrag)
