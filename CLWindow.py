@@ -117,8 +117,8 @@ class CLWindow(QtGui.QMainWindow):
 
 		self.updateCanvas()
 
-	def addLayer(self, name, clobj, shape=None, opacity=None, datatype=None, filters=None):
-		layer = self.canvas.addLayer(clobj, shape, opacity, datatype, filters=filters)
+	def addLayer(self, name, clobj, opacity=None, filter=None):
+		layer = self.canvas.addLayer(clobj, opacity, filter=filter)
 
 		item = QtGui.QListWidgetItem(name)
 		item.setText(name)

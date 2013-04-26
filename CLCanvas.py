@@ -8,7 +8,7 @@ import numpy as np
 import pyopencl as cl
 from pyopencl.tools import get_gl_sharing_context_properties
 
-from clutil import roundUp, padArray2D, createProgram, compareFormat, isFormat
+from clutil import roundUp, padArray2D, createProgram, compareFormat, isFormat, Buffer2D
 
 try:
 	from OpenGL.GL import *
@@ -28,29 +28,14 @@ class Filter:
 	def __init__(self, canvas):
 		pass
 
-class ChainedFilter(Filter):
-	def __init__(self, canvas):
-		Filter.__init__(self, canvas)
-
-	#must return output
-	def execute(self, input, output=None):
-		raise NotImplemented()
-
-	#class Transpose(Filter):
-	#	def __init__(self, context, queue, range, hues):
-	#		make extra buffer
-	#
-	#	def excute(self, input, output):
-	#		output becomes input for colorize
-
 class CLCanvas(QtOpenGL.QGLWidget):
 	class Layer:
-		def __init__(self, clobj, pos=None, enabled=True, opacity=1.0, filters=None):
+		def __init__(self, clobj, pos=None, enabled=True, opacity=1.0, filter=None):
 			self.clobj = clobj
 			self.opacity = opacity if opacity != None else 1.0
 			self.enabled = enabled
 			self.pos = pos
-			self.filters = [] if filters == None else filters
+			self.filter = filter
 
 	def __init__(self, shape, parent=None):
 		super(CLCanvas, self).__init__(parent)
@@ -103,17 +88,17 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 		self.kernFlip = cl.Kernel(program, 'flip')
 
-	def addLayer(self, clobj, shape=None, opacity=None, datatype=None, filters=None):
+		self.queue.finish()
+		glFinish()
+
+	def addLayer(self, clobj, opacity=None, filter=None):
+		if opacity == None:
+			opacity = 1.0
+
 		if type(clobj) == cl.Image:
-			shape = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
-		elif type(clobj) == cl.Buffer:
-			if shape == None:
-				raise ValueError('shape required with CL Buffer')
+			clobj.dim = (clobj.get_image_info(cl.image_info.WIDTH), clobj.get_image_info(cl.image_info.HEIGHT))
 
-			clobj.shape = shape
-			clobj.datatype = datatype
-
-		layer = CLCanvas.Layer(clobj, opacity=opacity, filters=filters)
+		layer = CLCanvas.Layer(clobj, opacity=opacity, filter=filter)
 		self.layers.append(layer)
 
 		return layer
@@ -195,58 +180,39 @@ class CLCanvas(QtOpenGL.QGLWidget):
 
 			visible.append(layer)
 
-			if layer.opacity == 1.0:
-				break
+#			if layer.opacity == 1.0:
+#				break
 
+		i = 0
 		for layer in reversed(visible):
+			args = [
+				cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
+				self.rbosCL[self.rboRead],
+				self.rbosCL[self.rboWrite],
+				np.float32(layer.opacity),
+				layer.clobj
+			]
 
-			input = layer.clobj
-			for filter in layer.filters:
-				output = filter.execute(input)
+			if layer.filter:
+				layer.filter.execute(self.queue, args)
+			else:
+				gw = layer.clobj.dim
 
-				input = output
-
-			if isFormat(input, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
-				self.args = [
-					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
-					self.rbosCL[self.rboRead],
-					self.rbosCL[self.rboWrite],
-					np.float32(layer.opacity),
-					input
-				]
-
-				gw = roundUp(input.shape, LWORKGROUP)
-
-				self.kernBlendImgf(self.queue, gw, LWORKGROUP, *self.args)
-			if isFormat(input, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8))):
-				self.args = [
-					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
-					self.rbosCL[self.rboRead],
-					self.rbosCL[self.rboWrite],
-					np.float32(layer.opacity),
-					input
-				]
-
-				gw = roundUp(input.shape, LWORKGROUP)
-
-				self.kernBlendImgui(self.queue, gw, LWORKGROUP, *self.args)
-			elif isFormat(input, (cl.Buffer, np.int32)):
-				self.args = [
-					cl.Sampler(self.context, False, cl.addressing_mode.NONE, cl.filter_mode.NEAREST),
-					self.rbosCL[self.rboRead],
-					self.rbosCL[self.rboWrite],
-					np.float32(layer.opacity),
-					input,
-					np.array(input.shape, np.int32),
-				]
-
-				gw = roundUp(input.shape, LWORKGROUP)
-
-				self.kernBlendBufui(self.queue, gw, LWORKGROUP, *self.args)
+				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNORM_INT8))):
+					self.kernBlendImgf(self.queue, gw, LWORKGROUP, *args)
+				if isFormat(layer.clobj, (cl.Image, cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8))):
+					self.kernBlendImgui(self.queue, gw, LWORKGROUP, *args)
+				elif isFormat(layer.clobj, (Buffer2D, np.uint32)):
+					args.append(np.array(layer.clobj.dim, np.int32))
+					self.kernBlendBufui(self.queue, gw, LWORKGROUP, *args)
+				else:
+					raise  NotImplemented("Not yet implemented for type {0}".format(type(layer.clobj)))
 
 			self.queue.finish()
 
 			self.swapRbos()
+
+			i += 1
 
 		cl.enqueue_release_gl_objects(self.queue, self.rbosCL)
 
