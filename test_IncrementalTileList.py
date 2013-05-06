@@ -16,11 +16,11 @@ devices = [devices[1]]
 context = cl.Context(devices)
 queue = cl.CommandQueue(context)
 
-dim = (50, 38)
+dim = (800, 608)
 shape = (dim[1], dim[0])
 nSamples = dim[0]*dim[1]
 
-tileList = IncrementalTileList(context, devices, dim)
+tileList = IncrementalTileList(context, devices, dim, (16, 16))
 
 hTiles = np.random.randint(0, 20, shape).astype(np.int32)
 cl.enqueue_copy(queue, tileList.d_tiles, hTiles).wait()

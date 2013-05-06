@@ -1130,3 +1130,40 @@ __kernel void load_tiles(
 		right[_g_img_xy-_g_img_w] = term;
 	}
 }
+
+__kernel void filter_transpose(
+	__global float* input,
+	int2 dim,
+	__global float* output
+) {
+	int gx = get_global_id(0);
+	int gy = get_global_id(1);
+	int gxy = gy*IMAGEW + gx;
+
+	int lw = get_local_size(0);
+	int lh = get_local_size(1);
+	int lx = get_local_id(0);
+	int ly = get_local_id(1);
+
+	int wx = get_group_id(0);
+	int wy = get_group_id(1);
+
+	int ix = gx;
+	int iy = gy*WAVE_LENGTH;
+	int ixy = iy*IMAGEW + ix;
+
+	//transposed coordinates, threads are enumerated vertically within the tile
+	int iwT = IMAGEW;
+	int ixT = wx*WAVE_BREDTH + ly*WAVE_LENGTH;
+	int iyT = wy*WORKGROUP_LENGTH + lx;
+	int ixyT = iyT*iwT + ixT;
+
+	for (int i=0; i<WAVE_LENGTH; i++) {
+		float in = input[ixy];
+
+		output[ixyT] = in;
+
+		ixy += IMAGEW;
+		ixyT += 1;
+	}
+}

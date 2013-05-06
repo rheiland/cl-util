@@ -28,14 +28,14 @@ float4 HSVtoRGB(float4 HSV)
 
 float4 colorizei(int val, int2 range, int2 hues) {
 	if (val < range[0])
-		return (float4) (0, 0, 0, 0);
+		return (float4) (0, 0, 0, 1);
 	else if (val > range[1])
 		return (float4) (1, 1, 1, 1);
 
 	float normalized = (float) (val-range[0])/(range[1]-range[0]);
 	float hue = hues[0] + normalized*(hues[1]-hues[0]);
 
-	float4 hsv = (float4) (hue/360, 1.0, 1.0, 0.0);
+	float4 hsv = (float4) (hue/360, 1.0, 1.0, 1.0);
 
 	return HSVtoRGB(hsv);
 }
@@ -44,9 +44,9 @@ float4 colorizef(float x, float2 range, float2 hues, float2 sats, float2 vals) {
 	float4 hsv;
 
 	if (x < range[0])
-		hsv = (float4) (0, 0, 0, 0);
+		hsv = (float4) (0, 0, 0, 1);
 	else if (x > range[1])
-		hsv = (float4) (0, 0, 1, 0);
+		hsv = (float4) (0, 0, 1, 1);
 	else {
 		float normalized = (x-range[0])/(range[1]-range[0]);
 
@@ -54,86 +54,90 @@ float4 colorizef(float x, float2 range, float2 hues, float2 sats, float2 vals) {
 			hues[0] + normalized*(hues[1]-hues[0]),
 			sats[0] + normalized*(sats[1]-sats[0]),
 			vals[0] + normalized*(vals[1]-vals[0]),
-			0
+			1
 			);
 	}
 
 	return HSVtoRGB(hsv);
 }
 
-__global kernel void colorize_i32(
-	sampler_t sampler,
-	__read_only image2d_t rbo_read,
-	__write_only image2d_t rbo_write,
-	float opacity,
-	__global int* input,
-	int2 inputDim,
+__global kernel void colorize_ui32(
 	float2 range,
 	float2 hues,
 	float2 sats,
-	float2 vals
+	float2 vals,
+	__global uint* input,
+	__write_only image2d_t output,
+	int2 dim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
+	if (gxy.x > dim.x-1 || gxy.y > dim.y-1)
 		return;
 
-	int in = input[gxy.y*inputDim.x + gxy.x];
-	float4 out = colorizef((float) in, range, hues, (float2) (1, 1), (float2) (1, 1));
+	uint in = input[gxy.y*dim.x + gxy.x];
+	float4 out = colorizef((float) in, range, hues, sats, vals);
 
-	float4 read = read_imagef(rbo_read, sampler, gxy);
+	write_imagef(output, gxy, out);
+}
 
-	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
+__global kernel void colorize_i32(
+	float2 range,
+	float2 hues,
+	float2 sats,
+	float2 vals,
+	__global int* input,
+	__write_only image2d_t output,
+	int2 dim
+) {
+	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
+
+	if (gxy.x > dim.x-1 || gxy.y > dim.y-1)
+		return;
+
+	int in = input[gxy.y*dim.x + gxy.x];
+	float4 out = colorizef((float) in, range, hues, sats, vals);
+
+	write_imagef(output, gxy, out);
 }
 
 __global kernel void colorize_ui8(
-	sampler_t sampler,
-	__read_only image2d_t rbo_read,
-	__write_only image2d_t rbo_write,
-	float opacity,
-	__global uchar* input,
-	int2 inputDim,
 	float2 range,
 	float2 hues,
 	float2 sats,
-	float2 vals
+	float2 vals,
+	__global uchar* input,
+	__write_only image2d_t output,
+	int2 dim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
+	if (gxy.x > dim.x-1 || gxy.y > dim.y-1)
 		return;
 
-	uchar in = input[gxy.y*inputDim.x + gxy.x];
-	float4 out = colorizef((float) in, range, hues, (float2) (1, 1), (float2) (1, 1));
+	uchar in = input[gxy.y*dim.x + gxy.x];
+	float4 out = colorizef((float) in, range, hues, sats, vals);
 
-	float4 read = read_imagef(rbo_read, sampler, gxy);
-
-	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
+	write_imagef(output, gxy, out);
 }
 
 
 __global kernel void colorize_f32(
-	sampler_t sampler,
-	__read_only image2d_t rbo_read,
-	__write_only image2d_t rbo_write,
-	float opacity,
-	__global float* input,
-	int2 inputDim,
 	float2 range,
 	float2 hues,
 	float2 sats,
-	float2 vals
-
+	float2 vals,
+	__global float* input,
+	__write_only image2d_t output,
+	int2 dim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
+	if (gxy.x > dim.x-1 || gxy.y > dim.y-1)
 		return;
 
-	float in = input[gxy.y*inputDim.x + gxy.x];
+	float in = input[gxy.y*dim.x + gxy.x];
 	float4 out = colorizef(in, range, hues, sats, vals);
 
-	float4 read = read_imagef(rbo_read, sampler, gxy);
-
-	write_imagef(rbo_write, gxy, read + (out-read)*opacity);
+	write_imagef(output, gxy, out);
 }

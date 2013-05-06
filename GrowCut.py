@@ -3,7 +3,8 @@ __author__ = 'Marc de Klerk'
 import pyopencl as cl
 import numpy as np
 import os, sys
-from clutil import roundUp, createProgram, Buffer2D
+from Buffer2D import Buffer2D
+from clutil import roundUp, createProgram
 from IncrementalTileList import IncrementalTileList
 
 LWORKGROUP = (16, 16)
@@ -42,24 +43,19 @@ class GrowCut():
         if weight == None:
             weight = GrowCut.WEIGHT_DEFAULT
 
-        if type(img) == cl.GLBuffer:
-            raise ValueError('CL Buffer')
-        elif type(img) == np.ndarray:
-            raise NotImplementedError('NP arrays')
-        elif type(img) == cl.GLTexture:
-            raise NotImplementedError('GL Texture')
-        elif type(img) == cl.Image:
+        if isinstance(img, cl.Image):
             self.dImg = img
 
             width = img.get_image_info(cl.image_info.WIDTH)
             height = img.get_image_info(cl.image_info.HEIGHT)
 
             dim = (width, height)
+        else:
+            raise NotImplementedError('Not implemented for {0}'.format(type(
+                img)))
 
-        self.shapeTiles = (dim[0] / TILEW, dim[1] / TILEH)
-
-        self.tilelist = IncrementalTileList(context, devices, self.shapeTiles)
-
+        self.tilelist = IncrementalTileList(context, devices, dim, (TILEW,
+                                                                    TILEH))
         self.hHasConverged = np.empty((1,), np.int32)
         self.hHasConverged[0] = False
 
@@ -90,8 +86,8 @@ class GrowCut():
         self.gWorksizeTiles16 = roundUp(dim, self.lWorksizeTiles16)
 
         options = [
-            '-D TILESW=' + str(self.shapeTiles[0]),
-            '-D TILESH=' + str(self.shapeTiles[1]),
+            '-D TILESW=' + str(self.tilelist.dim[0]),
+            '-D TILESH=' + str(self.tilelist.dim[1]),
             '-D IMAGEW=' + str(dim[0]),
             '-D IMAGEH=' + str(dim[1]),
             '-D TILEW=' + str(TILEW),

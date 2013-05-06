@@ -3,58 +3,66 @@ from CLCanvas import Filter as CLFilter
 import os, sys
 import numpy as np
 import pyopencl as cl
-from clutil import roundUp, createProgram, compareFormat, Buffer2D
+from clutil import roundUp, createProgram, compareFormat
+from Buffer2D import Buffer2D
+from Image2D import Image2D
 
 LWORKGROUP = (16, 16)
 
 class Colorize():
-	class HUES():
-		STANDARD = (0, 240.0/360)
-		REVERSED = (240.0/360, 0)
+    class HUES():
+        STANDARD = (0, 240.0 / 360)
+        REVERSED = (240.0 / 360, 0)
 
-	class SATURATION():
-		STANDARD = 0
+    class SATURATION():
+        STANDARD = 0
 
-	class Filter(CLFilter):
-		def __init__(self, kern, format, range, hues=None, vals=None, sats=None):
-			self.kern = kern
-			self.format = format
+    def __init__(self, context, range, hues=None, sats=None, vals=None):
+        self.context = context
 
-			self.range = range
-			self.hues = hues if hues != None else Colorize.HUES.STANDARD
-			self.vals = vals if vals != None else (1, 1)
-			self.sats = sats if sats != None else (1, 1)
+        devices = context.get_info(cl.context_info.DEVICES)
 
-		def execute(self, queue, args):
-			if self.format[0] == Buffer2D:
-				buf = args[-1]
-				args.append(np.array(buf.dim, np.int32))
+        filename = os.path.join(os.path.dirname(__file__), 'colorize.cl')
+        program = createProgram(context, devices, [], filename)
 
-			args += [
-				np.array(self.range, np.float32),
-				np.array(self.hues, np.float32),
-				np.array(self.vals, np.float32),
-				np.array(self.sats, np.float32)
-				]
+        self.kern_ui8 = cl.Kernel(program, 'colorize_ui8')
+        self.kern_ui = cl.Kernel(program, 'colorize_ui32')
+        self.kern_i = cl.Kernel(program, 'colorize_i32')
+        self.kern_f = cl.Kernel(program, 'colorize_f32')
 
-			gw = roundUp(buf.dim, LWORKGROUP)
+        self.format = format
+        self.range = range
+        self.hues = hues if hues != None else Colorize.HUES.STANDARD
+        self.vals = vals if vals != None else (1, 1)
+        self.sats = sats if sats != None else (1, 1)
 
-			self.kern(queue, gw, LWORKGROUP, *args)
+    def execute(self, queue, input):
+        output = Image2D(self.context,
+            cl.mem_flags.READ_WRITE, cl.ImageFormat(cl.channel_order.RGBA,
+                cl.channel_type.UNORM_INT8), input.dim)
 
-	def __init__(self, canvas):
-		filename = os.path.join(os.path.dirname(__file__), 'colorize.cl')
-		program = createProgram(canvas.context, canvas.devices, [], filename)
+        gw = roundUp(input.dim, LWORKGROUP)
 
-		self.kernels_i32 = cl.Kernel(program, 'colorize_i32')
-		self.kernels_ui8 = cl.Kernel(program, 'colorize_ui8')
-		self.kernels_f32 = cl.Kernel(program, 'colorize_f32')
+        args = [
+            np.array(self.range, np.float32),
+            np.array(self.hues, np.float32),
+            np.array(self.vals, np.float32),
+            np.array(self.sats, np.float32),
+            input,
+            output,
+            np.array(input.dim, np.int32)
+        ]
 
-	def factory(self, format, range, hues=None, sats=None, vals=None):
-		if compareFormat(format, (Buffer2D, np.uint8)):
-			kern = self.kernels_ui8;
-		if compareFormat(format, (Buffer2D, np.int32)):
-			kern = self.kernels_i32;
-		elif compareFormat(format, (Buffer2D, np.float32)):
-			kern = self.kernels_f32;
+        if type(input) == Buffer2D:
+            if input.dtype == np.uint8:
+                self.kern_ui8(queue, gw, LWORKGROUP, *args).wait()
+            elif input.dtype == np.uint32:
+                self.kern_ui(queue, gw, LWORKGROUP, *args).wait()
+            elif input.dtype == np.int32:
+                self.kern_i(queue, gw, LWORKGROUP, *args).wait()
+            elif input.dtype == np.float32:
+                self.kern_f(queue, gw, LWORKGROUP, *args).wait()
+            else:
+                raise NotImplementedError
 
-		return Colorize.Filter(kern, format, range, hues, sats, vals)
+        return output

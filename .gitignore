@@ -1,8 +1,7 @@
-
 *.xml
-
 .idea/clutil.iml
-
 .idea/.name
-
 *.pyc
+*.so
+*.c
+*.html

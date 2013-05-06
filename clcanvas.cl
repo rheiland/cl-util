@@ -30,16 +30,16 @@ __global kernel void blend_bufui(
 	__write_only image2d_t rbo_write,
 	float opacity,
 	__global uint* input,
-	int2 inputDim
+	int2 dim
 ) {
 	int2 gxy = (int2) (get_global_id(0), get_global_id(1));
 
-	if (gxy.x > inputDim.x-1 || gxy.y > inputDim.y-1)
+	if (gxy.x > dim.x-1 || gxy.y > dim.y-1)
 		return;
 
 	float4 read = read_imagef(rbo_read, sampler, gxy);
 
-	uint in = input[gxy.y*inputDim.x + gxy.x];
+	uint in = input[gxy.y*dim.x + gxy.x];
 	uint4 in4 = RGBA_UI_TO_UI4(in);
 	float4 out = uint42f4n(in4);
 

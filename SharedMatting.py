@@ -180,7 +180,7 @@ if __name__ == "__main__":
         if iteration % refresh == 0:
             sm.processTrimap(dStrokes, growCut.dLabelsOut, growCut.dStrengthIn, 0.95)
 #
-            sm.calcMatte(growCut.dLabelsOut)
+#            sm.calcMatte(growCut.dLabelsOut)
             window.updateCanvas()
 #            pass
 

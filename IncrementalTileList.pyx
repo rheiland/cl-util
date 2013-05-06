@@ -5,10 +5,13 @@
 
 import os
 import numpy as np
+
 cimport numpy as cnp
 import pyopencl as cl
-from clutil import roundUp, createProgram, Buffer2D
+from clutil import roundUp, createProgram
+from Buffer2D import Buffer2D
 from StreamCompact import StreamCompact
+#from Colorize import Colorize
 
 from libc.math cimport log
 
@@ -33,12 +36,15 @@ class Logical:
 
 cdef class IncrementalTileList:
     cdef:
-        tuple dim
+        readonly tuple dim
+        readonly tuple global_dim
+        tuple tiles_dim
         object context
         object queue
         tuple lw
 
-        object kern_flag, kern_flag_logcal, kern_init, kern_increment_logical
+        object kern_flag, kern_flag_logcal, kern_init,\
+        kern_increment_logical, kern_filter
 
         object streamCompact
 
@@ -51,29 +57,47 @@ cdef class IncrementalTileList:
         int init_iteration
         readonly int iteration
 
-    def __init__(self, context, devices, dim):
+    def __init__(self, context, devices, global_dim, tiles_dim):
         self.h_length = np.empty((1,), np.int32)
-        self.dim = dim
 
-        self.streamCompact = StreamCompact(context, devices, dim[0]*dim[1])
+        self.dim = (global_dim[0] / tiles_dim[0], global_dim[1] / tiles_dim[1])
+        self.global_dim = global_dim
+        self.tiles_dim = tiles_dim
 
-        self.d_length = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=self.h_length)
+        self.streamCompact = StreamCompact(context, devices,
+            self.dim[0] * self.dim[1])
+
+        self.d_length = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR,
+            hostbuf=self.h_length)
         self.d_list = self.streamCompact.listFactory()
 
         self.queue = cl.CommandQueue(context)
 
         self.is_dirty = True
 
-        self.d_tiles = Buffer2D.fromBuffer(self.streamCompact.flagFactory(), dim, np.int32)
-        self.d_flags = Buffer2D.fromBuffer(self.streamCompact.flagFactory(), dim, np.int32)
+        self.d_tiles = Buffer2D.fromBuffer(self.streamCompact.flagFactory(),
+            self.dim, np.int32)
+        self.d_flags = Buffer2D.fromBuffer(self.streamCompact.flagFactory(),
+            self.dim, np.int32)
 
-        filename = os.path.join(os.path.dirname(__file__), 'streamcompact.cl')
-        program = createProgram(context, devices, [], filename)
+        options = [
+            '-D TILESW=' + str(self.dim[0]),
+            '-D TILESH=' + str(self.dim[1]),
+            '-D TILEW=' + str(tiles_dim[0]),
+            '-D TILEH=' + str(tiles_dim[1])
+        ]
+
+        print options
+
+        filename = os.path.join(os.path.dirname(__file__),
+            'incremental_tile_list.cl')
+        program = createProgram(context, devices, options, filename)
 
         self.kern_flag = cl.Kernel(program, 'flag')
         self.kern_flag_logcal = cl.Kernel(program, 'flag_logical')
         self.kern_init = cl.Kernel(program, 'init_incremental')
         self.kern_increment_logical = cl.Kernel(program, 'increment_logical')
+        self.kern_filter = cl.Kernel(program, 'filter')
 
         self.init_iteration = -1
 
@@ -98,7 +122,7 @@ cdef class IncrementalTileList:
         if operator == None: operator = Operator.EQUAL
         if operand == None:  operand = self.iteration
 
-        length = self.d_tiles.size/szInt
+        length = self.d_tiles.size / szInt
 
         gw = roundUp((length, ), self.lw)
         args = [
@@ -113,10 +137,11 @@ cdef class IncrementalTileList:
         self.streamCompact.compact(self.d_flags, self.d_list, self.d_length)
         self.is_dirty = True
 
-    def incorporate(self, d_tiles2, operator1, operand1, operator2, operand2, logical):
-        length = self.d_tiles.size/szInt
+    def incorporate(self, d_tiles2, operator1, operand1, operator2, operand2,
+                    logical):
+        length = self.d_tiles.size / szInt
 
-        gw = roundUp((length, ), IncrementalTileList.lw)
+        gw = roundUp((length, ), self.lw)
         args = [
             self.d_tiles,
             d_tiles2,
@@ -131,8 +156,9 @@ cdef class IncrementalTileList:
         ]
         self.kern_increment_logical(self.queue, gw, self.lw, *args).wait()
 
-    def buildLogical(self, d_tiles2, operator1, operand1, operator2, operand2, logical):
-        length = self.d_tiles.size/szInt
+    def buildLogical(self, d_tiles2, operator1, operand1, operator2, operand2,
+                     logical):
+        length = self.d_tiles.size / szInt
 
         gw = roundUp((length, ), IncrementalTileList.lw)
         args = [
@@ -163,3 +189,22 @@ cdef class IncrementalTileList:
         gw = roundUp(self.dim, LWORKGROUP_2D)
 
         self.kern_init(self.queue, gw, LWORKGROUP_2D, *args).wait()
+
+    def execute(self, queue, input):
+        context = queue.get_info(cl.command_queue_info.CONTEXT)
+
+        output = Buffer2D(context, cm.READ_WRITE, input.global_dim,
+            dtype=np.uint32)
+
+        args = [
+            input.d_tiles,
+            np.array(input.global_dim, np.int32),
+            np.int32(input.iteration),
+            output
+        ]
+
+        gWorksizeTiles16 = roundUp(input.global_dim, (16, 16))
+
+        self.kern_filter(queue, gWorksizeTiles16, (16, 16), *args).wait()
+
+        return output

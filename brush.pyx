@@ -12,7 +12,8 @@ import os
 from skimage.draw import line, circle
 
 import pyopencl as cl
-from clutil import roundUp, Buffer2D, createProgram
+from Buffer2D import Buffer2D
+from clutil import createProgram
 
 cm = cl.mem_flags
 cdef int szFloat = np.dtype(np.float32).itemsize

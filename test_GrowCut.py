@@ -9,9 +9,12 @@ from CLWindow import CLWindow
 from CLCanvas import CLCanvas
 from Brush import Brush
 from Colorize import Colorize
-from clutil import roundUp, createProgram, Buffer2D, padArray2D
+from clutil import roundUp, padArray2D
 from GrowCut import GrowCut
+from Buffer2D import Buffer2D
+from Image2D import Image2D
 import numpy as np
+import pyopencl as cl
 cm = cl.mem_flags
 
 img = Image.open("/Users/marcdeklerk/msc/code/dataset/processed/source/800x600/GT04.png")
@@ -32,19 +35,18 @@ shapeCL = (shapeNP[1], shapeNP[0])
 
 hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
 
-dImg = cl.Image(clContext,
+dImg = Image2D(clContext,
     cl.mem_flags.READ_ONLY,
     cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
     shapeCL
 )
-cl.enqueue_copy(queue, dImg, hImg, origin=(0, 0), region=shapeCL)
+cl.enqueue_copy(queue, dImg, hImg, origin=(0, 0), region=shapeCL).wait()
 
 dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.uint8)
 
 brush = Brush(clContext, devices, dStrokes)
 
 growCut = GrowCut(clContext, devices, dImg, GrowCut.NEIGHBOURHOOD.VON_NEUMANN, GrowCut.WEIGHT_DEFAULT)
-
 
 label = 1
 
@@ -96,56 +98,23 @@ def keyPress(key):
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
 
-colorize = Colorize(canvas)
-
 #setup window
-filter = colorize.factory((Buffer2D, np.uint8), (0, 8), Colorize.HUES.STANDARD, (1, 1), (1, 1))
-#    window.addLayer('labels', growCut.dLabelsIn, 0.5, filter=filter)
-window.addLayer('labels', growCut.dLabelsOut, 0.5, filter=filter)
-window.addLayer('strokes', dStrokes, 0.25, filter=filter)
+filter = Colorize(clContext, (0, 8), Colorize.HUES.STANDARD)
+window.addLayer('labels', growCut.dLabelsIn, 0.5, filters=[filter])
+window.addLayer('labels', growCut.dLabelsOut, 0.5, filters=[filter])
+window.addLayer('strokes', dStrokes, 0.25, filters=[filter])
+
+filter = Colorize(clContext, (0, 1.0), hues=Colorize.HUES.REVERSED)
+window.addLayer('strength', growCut.dStrengthIn, 1.0, filters=[filter])
 window.addLayer('image', dImg)
 
-filter = colorize.factory((Buffer2D, np.float32), (0, 1.0), hues=Colorize.HUES.REVERSED)
-window.addLayer('strength', growCut.dStrengthIn, 1.0, filter=filter)
-
-options = [
-    '-D IMAGEW={0}'.format(shapeCL[0]),
-    '-D IMAGEH={0}'.format(shapeCL[1]),
-    '-D TILESW=' + str(growCut.shapeTiles[0]),
-    '-D TILESH=' + str(growCut.shapeTiles[1])
-]
-
-filename = os.path.join(os.path.dirname(__file__), 'graphcut_filter.cl')
-program = createProgram(canvas.context, canvas.devices, options, filename)
-
-kernTileList = cl.Kernel(program, 'tilelist_growcut')
-
-class TileListFilter():
-    def execute(self, queue, args):
-        buf = args[-1]
-        args.append(np.array(buf.dim, np.int32))
-
-        args += [
-            np.array([growCut.tilelist.iteration - 1, growCut.tilelist.iteration], np.float32),
-            np.array(Colorize.HUES.REVERSED, np.float32),
-            np.array([1, 1], np.float32),
-            np.array([1, 1], np.float32),
-            ]
-        kernTileList(queue, growCut.gWorksizeTiles16, growCut.lWorksizeTiles16, *args)
-
-tilelistfilter = TileListFilter()
-
-window.addLayer('tiles', growCut.tilelist.d_tiles, filter=tilelistfilter)
+window.addLayer('tiles', growCut.tilelist, filters=[growCut.tilelist])
 
 window.addButton("start", functools.partial(timer.start, 0))
 window.addButton('next', next)
 window.setMousePress(mousePress)
 window.setMouseDrag(mouseDrag)
 window.setKeyPress(keyPress)
-
-#	growCut.tilelist.flag(StreamCompact.OPERATOR_GTE, -1)
-
-#	timer.start()
 
 window.resize(1000, 700)
 window.show()

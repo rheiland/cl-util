@@ -6,15 +6,18 @@ from Cython.Distutils import build_ext
 import numpy
 
 ext_modules = [
-#    Extension("Tool", ["Tool.pyx"], include_dirs=[numpy.get_include()]),
-#    Extension("Brush", ["Brush.pyx"], include_dirs=[numpy.get_include()]),
-    Extension("PrefixSum", ["PrefixSum.pyx"], include_dirs=[numpy.get_include()]),
-    Extension("StreamCompact", ["StreamCompact.pyx"], include_dirs=[numpy.get_include()]),
-    Extension("IncrementalTileList", ["IncrementalTileList.pyx"], include_dirs=[numpy.get_include()]),
+    #    Extension("Tool", ["Tool.pyx"], include_dirs=[numpy.get_include()]),
+    Extension("Brush", ["Brush.pyx"], include_dirs=[numpy.get_include()]),
+    Extension("PrefixSum", ["PrefixSum.pyx"],
+        include_dirs=[numpy.get_include()]),
+    Extension("StreamCompact", ["StreamCompact.pyx"],
+        include_dirs=[numpy.get_include()]),
+    Extension("IncrementalTileList", ["IncrementalTileList.pyx"],
+        include_dirs=[numpy.get_include()]),
 ]
 
 setup(
-    name = 'Brush',
-    cmdclass = {'build_ext': build_ext},
-    ext_modules = ext_modules
+    name='Brush',
+    cmdclass={'build_ext': build_ext},
+    ext_modules=ext_modules
 )
