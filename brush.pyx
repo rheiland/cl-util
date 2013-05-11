@@ -41,7 +41,7 @@ cdef int DEFAULT_LABEL = 0
 cdef class Brush:
     cdef int[2] dim
     cdef int radius
-    cdef readonly  int label
+    cdef readonly int label
 
     cdef readonly int n_points
     cdef cnp.ndarray h_points
@@ -141,13 +141,13 @@ cdef class Brush:
         cdef int i, j
 
         if p1 == None:
-            ys, xs = circle(p0[1], p0[0], 10)
+            ys, xs = circle(p0[1], p0[0], self.radius)
 
             for i in range(len(xs)):
                 points.add(ys[i]*self.dim[0] + xs[i])
         else:
             ys, xs = line(p0[1], p0[0], p1[1], p1[0])
-            ys2, xs2 = circle(10, 10, 10)
+            ys2, xs2 = circle(self.radius, self.radius, self.radius)
 
             for i in range(len(xs)):
                 for j in range(len(xs2)):

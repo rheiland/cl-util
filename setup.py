@@ -14,6 +14,8 @@ ext_modules = [
         include_dirs=[numpy.get_include()]),
     Extension("IncrementalTileList", ["IncrementalTileList.pyx"],
         include_dirs=[numpy.get_include()]),
+    Extension("GraphCut", ["GraphCut.pyx"], include_dirs=[numpy.get_include(
+    )]),
 ]
 
 setup(

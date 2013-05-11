@@ -6,7 +6,7 @@ import functools
 from GraphCut import GraphCut
 import Image
 import os, sys
-from clutil import roundUp, createProgram, padArray2D
+from clutil import roundUp, padArray2D
 from Buffer2D import Buffer2D
 import numpy as np
 import pyopencl as cl
@@ -19,7 +19,7 @@ if img.mode != 'RGBA':
     img = img.convert('RGBA')
 
 shape = (img.size[1], img.size[0])
-hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shape, GraphCut.lWorksizeTiles16), 'edge')
+hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), roundUp(shape, GraphCut.lWorksize), 'edge')
 
 width = hImg.shape[1]
 height = hImg.shape[0]
@@ -31,6 +31,7 @@ canvas = CLCanvas(dim)
 window = CLWindow(canvas)
 
 context = canvas.context
+queue = cl.CommandQueue(context)
 
 dImg = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hImg)
 
@@ -46,7 +47,7 @@ hSink = np.load('scoreBg.npy').reshape(shape)
 dExcess = Buffer2D(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=(hSink-hSrc))
 
 hWeightMin = 0
-hWeightMax = gc.lamda * 1.0/GraphCut.EPSILON
+hWeightMax = gc.lamda * 1.0/gc.epsilon
 
 filter = Colorize(context, (0, 50), hues=Colorize.HUES.REVERSED)
 window.addLayer('excess', dExcess, filters=[filter])
@@ -71,7 +72,7 @@ timer = QtCore.QTimer()
 #	timer.timeout.connect(next)
 
 def reset():
-    cl.enqueue_copy(gc.queue, dExcess, (hSink-hSrc)).wait()
+    cl.enqueue_copy(queue, dExcess, (hSink-hSrc)).wait()
 
 def cut():
     gc.cut(dExcess, 5)
