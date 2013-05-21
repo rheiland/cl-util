@@ -1,43 +1,80 @@
-__author__ = 'Marc de Klerk'
-
 import pyopencl as cl
 import numpy as np
-from clutil import createProgram, roundUp, ceil_divi, padArray2D
+from clutil import createProgram, ceil_divi, roundUp
 import os
 from Image2D import Image2D
+cimport numpy as cnp
 
-NDIM_MAX = 3
-INIT_COVAR = 30.0
-MIN_COVAR = 0.001
-A_W = roundUp(2 * NDIM_MAX + 1, 4)
+DEF NDIM = 3
+DEF INIT_COVAR = 30.0
+DEF MIN_COVAR = 0.001
+#cdef int A_W = roundUp(2 * NDIM + 1, 4)
+DEF A_W = 8
 
 cm = cl.mem_flags
 szFloat = np.dtype(np.float32).itemsize
 szInt = np.dtype(np.int32).itemsize
 
-class GMM:
-    def __init__(self, context, nIter, nComps, capSamples=None, min_covar=None,
-                 init_covar=None):
+cdef class GMM:
+    cdef:
+        int n_iterations
+        int n_components
+        int cap_samples
+        tuple local_worksize
+
+        float init_covar
+        float min_covar
+
+        list logLiklihoods
+        public int has_converged
+        public int has_preset_wmc
+
+        object context
+        object queue
+
+        object kernEM1
+        object kernEM2
+        object kernEval
+        object kernCheckConverge
+        object kernScore_buf
+        object kernScore_img2d
+        object kernInitA
+
+        cnp.ndarray hResp
+        cnp.ndarray hEval
+        cnp.ndarray hA
+
+        readonly object dA
+        object dEval
+        object dEval_back
+        object dResp
+        object dResp_back
+        object dResp_x
+        object dResp_x_back
+        object dResp_x2
+        object dResp_x2_back
+
+
+
+    def __init__(self, context, n_iterations, n_components, cap_samples=None, min_covar=None, init_covar=None):
         self.context = context
-        self.nIter = nIter
-        self.nComps = nComps
-        self.capSamples = capSamples
-        self.lWorksize = (256, )
+        self.n_iterations = n_iterations
+        self.n_components = n_components
+        self.cap_samples = cap_samples
+        self.local_worksize = (256, )
 
         self.init_covar = init_covar if (init_covar) else INIT_COVAR
         self.min_covar = min_covar if (min_covar) else MIN_COVAR
 
         options = [
-            '-D INIT_COVAR=' + str(self.init_covar) + 'f',
-            '-D MIN_COVAR=' + str(self.min_covar) + 'f'
+            '-D INIT_COVAR={0:.1}f'.format(self.init_covar),
+            '-D MIN_COVAR={0:.1}f'.format(self.min_covar)
         ]
 
-        self.queue = cl.CommandQueue(self.context,
-            properties=cl.command_queue_properties.PROFILING_ENABLE)
+        self.queue = cl.CommandQueue(self.context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
         filename = os.path.join(os.path.dirname(__file__), 'gmm.cl')
-        program = createProgram(self.context, self.context.devices, options,
-            filename)
+        program = createProgram(self.context, self.context.devices, options, filename)
 
         self.kernEM1 = cl.Kernel(program, 'em1')
         self.kernEM2 = cl.Kernel(program, 'em2')
@@ -47,34 +84,33 @@ class GMM:
         self.kernScore_img2d = cl.Kernel(program, 'score_img2d')
         self.kernInitA = cl.Kernel(program, 'initA')
 
-        if capSamples != None:
+        if cap_samples != None:
             self.initClMem()
 
-        self.logLiklihoods = [None] * nIter
-        self.converged = False
+        self.logLiklihoods = [None] * n_iterations
+        self.has_converged = False
         self.has_preset_wmc = False
 
 
     def initClMem(self):
-        capSamples = self.capSamples
-        nComps = self.nComps
+        capSamples = self.cap_samples
+        nComps = self.n_components
 
         self.hA = np.empty((nComps, A_W), np.float32)
-        self.dA = cl.Buffer(self.context, cm.READ_ONLY | cm.COPY_HOST_PTR,
-            hostbuf=self.hA)
+        self.dA = cl.Buffer(self.context, cm.READ_ONLY | cm.COPY_HOST_PTR, hostbuf=self.hA)
 
         shpFront1 = (capSamples)
-        shpBack1 = ceil_divi(capSamples, 2 * self.lWorksize[0])
+        shpBack1 = ceil_divi(capSamples, 2 * self.local_worksize[0])
         szFront1 = int(np.prod(shpFront1))
         szBack1 = int(np.prod(shpBack1))
 
         shpFront2 = (nComps, capSamples)
-        shpBack2 = (nComps, ceil_divi(capSamples, 2 * self.lWorksize[0]))
+        shpBack2 = (nComps, ceil_divi(capSamples, 2 * self.local_worksize[0]))
         szFront2 = int(np.prod(shpFront2))
         szBack2 = int(np.prod(shpBack2))
 
         shpFront3 = (nComps, capSamples, 4)
-        shpBack3 = (nComps, ceil_divi(capSamples, 2 * self.lWorksize[0]), 4)
+        shpBack3 = (nComps, ceil_divi(capSamples, 2 * self.local_worksize[0]), 4)
         szFront3 = int(np.prod(shpFront3))
         szBack3 = int(np.prod(shpBack3))
 
@@ -88,70 +124,14 @@ class GMM:
         self.dResp_x = cl.Buffer(self.context, cm.READ_ONLY, szFloat * szFront3)
         self.dResp_x_back = cl.Buffer(self.context, cm.READ_ONLY, szFloat * szBack3)
         self.dResp_x2 = cl.Buffer(self.context, cm.READ_ONLY, szFloat * szFront3)
-        self.dResp_x2_back = cl.Buffer(self.context, cm.READ_ONLY,
-            szFloat * szBack3)
+        self.dResp_x2_back = cl.Buffer(self.context, cm.READ_ONLY, szFloat * szBack3)
 
-        self.argsEM1 = [
-#            self.dSamples,
-            None,
-            self.dA,
-            cl.LocalMemory(4 * self.hA.size),
-            np.int32(nComps),
-            None,
-            self.dResp,
-            self.dResp_x,
-            self.dResp_x2
-        ]
-
-        self.argsEM2 = [
-            None,
-            None,
-            None,
-            cl.LocalMemory(4 * self.lWorksize[0]),
-            cl.LocalMemory(4 * 4 * self.lWorksize[0]),
-            cl.LocalMemory(4 * 4 * self.lWorksize[0]),
-            np.int32(nComps),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            self.dA,
-            cl.LocalMemory(4 * self.hA.size),
-        ]
-
-        self.argsEval = [
-#            self.dSamples,
-            None,
-            self.dA,
-            cl.LocalMemory(4 * self.hA.size),
-            np.int32(nComps),
-            None,
-            self.dEval
-        ]
-
-        self.argsCheckEval = [
-            None,
-            cl.LocalMemory(4 * self.lWorksize[0]),
-            None,
-            None,
-            None,
-        ]
-
-        self.argsInitA = [
-            None,
-#            self.dSamples,
-            np.int32(nComps),
-            None,
-            self.dA,
-        ]
 
     def score(self, d_population, dScore):
         args = [
             self.dA,
             cl.LocalMemory(4 * self.hA.size),
-            np.int32(self.nComps),
+            np.int32(self.n_components),
             dScore,
         ]
 
@@ -163,8 +143,8 @@ class GMM:
             ]
             kern = self.kernScore_buf
 
-            gWorksize = roundUp((n_population, ), self.lWorksize)
-            kern(self.queue, gWorksize, self.lWorksize, *args).wait()
+            gWorksize = roundUp((n_population, ), self.local_worksize)
+            kern(self.queue, gWorksize, self.local_worksize, *args).wait()
 
         elif type(d_population) == Image2D:
             n_population = d_population.size / szFloat
@@ -182,37 +162,87 @@ class GMM:
         else:
             raise NotImplementedError()
 
-    def fit(self, d_samples, nSamples=None, retParams=False):
+    def fit(self, d_samples, nSamples=None, retParams=None):
         if nSamples == None:
             nSamples = d_samples.size / szInt
 
-        if nSamples < self.nComps:
+        if nSamples < self.n_components:
             raise ValueError('nSamples < nComp: {0}, {1}'.format(nSamples,
-                self.nComps))
+                self.n_components))
 
-        if self.capSamples == None or nSamples > self.capSamples:
-            self.capSamples = nSamples
+        if self.cap_samples == None or nSamples > self.cap_samples:
+            self.cap_samples = nSamples
             self.initClMem()
 
-        self.argsEM1[0] = d_samples
-        self.argsEM1[4] = np.int32(nSamples)
-        self.argsEM2[7] = np.int32(nSamples)
-        self.argsEval[4] = np.int32(nSamples)
-        self.argsInitA[2] = np.int32(nSamples)
-        self.argsInitA[0] = d_samples
+        argsEM1 = [
+            d_samples,
+            self.dA,
+            cl.LocalMemory(4 * self.hA.size),
+            np.int32(self.n_components),
+            np.int32(nSamples),
+            self.dResp,
+            self.dResp_x,
+            self.dResp_x2
+        ]
 
-        if self.converged == False and self.has_preset_wmc == False:
-#            print 'initA'
-            self.kernInitA(self.queue, roundUp((self.nComps, ), (16, )), (16, ), *(self.argsInitA)).wait()
+        argsEM2 = [
+            None,
+            None,
+            None,
+            cl.LocalMemory(4 * self.local_worksize[0]),
+            cl.LocalMemory(4 * 4 * self.local_worksize[0]),
+            cl.LocalMemory(4 * 4 * self.local_worksize[0]),
+            np.int32(self.n_components),
+            np.int32(nSamples),
+            None,
+            None,
+            None,
+            None,
+            None,
+            self.dA,
+            cl.LocalMemory(4 * self.hA.size),
+        ]
 
-        self.converged = False
+        argsEval = [
+            d_samples,
+            self.dA,
+            cl.LocalMemory(4 * self.hA.size),
+            np.int32(self.n_components),
+            np.int32(nSamples),
+            self.dEval
+        ]
+
+        argsCheckEval = [
+            None,
+            cl.LocalMemory(4 * self.local_worksize[0]),
+            None,
+            None,
+            None,
+        ]
+
+        argsInitA = [
+            d_samples,
+            np.int32(self.n_components),
+            np.int32(nSamples),
+            self.dA,
+        ]
+
+        if self.has_converged == False and self.has_preset_wmc == False:
+            self.kernInitA(self.queue, roundUp((self.n_components, ), (16, )), (16, ), *(argsInitA)).wait()
+
+        self.has_converged = False
         self.has_preset_wmc = False
 
-        for i in xrange(self.nIter):
-            gWorksize = roundUp((nSamples, ), self.lWorksize)
+        cdef int nSamplesCurrent
+        cdef int nSamplesReduced
+        cdef tuple gWorksize
+        cdef object dTmp
+        cdef int i
 
-            self.kernEM1(self.queue, gWorksize, self.lWorksize,
-                *(self.argsEM1)).wait()
+        for i in xrange(self.n_iterations):
+            gWorksize = roundUp((nSamples, ), self.local_worksize)
+
+            self.kernEM1(self.queue, gWorksize, self.local_worksize, *(argsEM1)).wait()
 
             nSamplesCurrent = nSamples
 
@@ -225,23 +255,21 @@ class GMM:
             dResp_x2Out = self.dResp_x2_back
 
             while nSamplesCurrent != 1:
-                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.lWorksize[0]);
+                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.local_worksize[0]);
 
-                self.argsEM2[0] = dRespIn
-                self.argsEM2[1] = dResp_xIn
-                self.argsEM2[2] = dResp_x2In
-                self.argsEM2[8] = np.int32(nSamplesCurrent)
-                self.argsEM2[9] = np.int32(nSamplesReduced)
-                self.argsEM2[10] = dRespOut
-                self.argsEM2[11] = dResp_xOut
-                self.argsEM2[12] = dResp_x2Out
+                argsEM2[0] = dRespIn
+                argsEM2[1] = dResp_xIn
+                argsEM2[2] = dResp_x2In
+                argsEM2[8] = np.int32(nSamplesCurrent)
+                argsEM2[9] = np.int32(nSamplesReduced)
+                argsEM2[10] = dRespOut
+                argsEM2[11] = dResp_xOut
+                argsEM2[12] = dResp_x2Out
 
                 #lWorksize = (256, )
-                gWorksize = roundUp((ceil_divi(nSamplesCurrent, 2), ),
-                    self.lWorksize)
+                gWorksize = roundUp((ceil_divi(nSamplesCurrent, 2), ), self.local_worksize)
 
-                self.kernEM2(self.queue, gWorksize, self.lWorksize,
-                    *(self.argsEM2)).wait()
+                self.kernEM2(self.queue, gWorksize, self.local_worksize, *(argsEM2)).wait()
 
                 if nSamplesReduced == 1:
                     break;
@@ -260,10 +288,9 @@ class GMM:
 
                 nSamplesCurrent = nSamplesReduced
 
-            gWorksize = roundUp((nSamples, ), self.lWorksize)
+            gWorksize = roundUp((nSamples, ), self.local_worksize)
 
-            self.kernEval(self.queue, gWorksize, self.lWorksize,
-                *(self.argsEval)).wait()
+            self.kernEval(self.queue, gWorksize, self.local_worksize, *(argsEval)).wait()
 
             nSamplesCurrent = nSamples
 
@@ -271,17 +298,16 @@ class GMM:
             dEvalOut = self.dEval_back
 
             while nSamplesCurrent != 1:
-                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.lWorksize[0]);
+                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.local_worksize[0]);
 
-                self.argsCheckEval[0] = dEvalIn
-                self.argsCheckEval[2] = np.int32(nSamplesCurrent)
-                self.argsCheckEval[3] = np.int32(nSamplesReduced)
-                self.argsCheckEval[4] = dEvalOut
+                argsCheckEval[0] = dEvalIn
+                argsCheckEval[2] = np.int32(nSamplesCurrent)
+                argsCheckEval[3] = np.int32(nSamplesReduced)
+                argsCheckEval[4] = dEvalOut
 
-                gWorksize = roundUp((nSamplesCurrent, ), self.lWorksize)
+                gWorksize = roundUp((nSamplesCurrent, ), self.local_worksize)
 
-                self.kernCheckConverge(self.queue, gWorksize, self.lWorksize,
-                    *(self.argsCheckEval)).wait()
+                self.kernCheckConverge(self.queue, gWorksize, self.local_worksize, *(argsCheckEval)).wait()
 
                 if nSamplesReduced == 1:
                     break;
@@ -301,7 +327,7 @@ class GMM:
 #                print i, self.logLiklihoods[i], diff
 
                 if diff < 0.01:
-                    self.converged = True
+                    self.has_converged = True
                     break
                 #else:
                 #	print i, self.logLiklihoods[i]
@@ -312,7 +338,7 @@ class GMM:
             nSamplesCurrent = nSamples
 
             while True:
-                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.lWorksize[0]);
+                nSamplesReduced = ceil_divi(nSamplesCurrent, 2 * self.local_worksize[0]);
 
                 if nSamplesReduced == 1:
                     break;
@@ -327,16 +353,16 @@ class GMM:
             cl.enqueue_copy(self.queue, hResp_x, dResp_xIn).wait()
             cl.enqueue_copy(self.queue, hResp_x2, dResp_x2In).wait()
 
-            resps = np.sum(hResp.ravel()[0:self.nComps * nSamplesCurrent]
-            .reshape(self.nComps,
+            resps = np.sum(hResp.ravel()[0:self.n_components * nSamplesCurrent]
+            .reshape(self.n_components,
                 nSamplesCurrent), axis=1)
             resps_x = np.sum(
-                hResp_x.ravel()[0:4 * self.nComps * nSamplesCurrent].reshape(self.nComps,
+                hResp_x.ravel()[0:4 * self.n_components * nSamplesCurrent].reshape(self.n_components,
                     nSamplesCurrent, 4), axis=1)
             resps_x2 = np.sum(
-                hResp_x2.ravel()[0:4 * self.nComps * nSamplesCurrent].reshape(self.nComps,
+                hResp_x2.ravel()[0:4 * self.n_components * nSamplesCurrent].reshape(self.n_components,
                     nSamplesCurrent, 4), axis=1)
-            one_over_resps = (1.0 / resps).reshape(self.nComps, 1)
+            one_over_resps = (1.0 / resps).reshape(self.n_components, 1)
 
             weights = resps / np.sum(resps)
             means = one_over_resps * resps_x

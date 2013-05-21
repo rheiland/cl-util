@@ -6,11 +6,11 @@
 #endif
 
 #ifndef MIN_COVAR
-#define MIN_COVAR 0.001f
+#define MIN_COVAR 0.001
 #endif
 
 #ifndef INIT_COVAR
-#define INIT_COVAR 10.0f
+#define INIT_COVAR 10.0
 #endif
 
 #define MIN_COVAR4 (float4) (MIN_COVAR, MIN_COVAR, MIN_COVAR, MIN_COVAR)
@@ -76,7 +76,7 @@ __kernel void em1(
 	__global uint* samples,
 	__global float4* gA,
 	__local float4* sA,
-	int m,
+	int n_components,
 	int nSamples,
 	__global float* resp,
 	__global float4* resp_x,
@@ -87,7 +87,7 @@ __kernel void em1(
 
 	int li = get_local_id(0);
 
-	if (li < m*2) {
+	if (li < n_components*2) {
 		sA[li] = gA[li];
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -104,7 +104,7 @@ __kernel void em1(
 
 	float ln_wgs[MAX_NCOMPONENT];
 
-	for (int i=0; i<m; i++) {
+	for (int i=0; i<n_components; i++) {
 		int is = i*2;
 
 		float4 a = sA[is];//(float4) (sA[is+0], sA[is+1], sA[is+2], sA[is+3]);
@@ -116,13 +116,13 @@ __kernel void em1(
 
 	float aMax = ln_wgs[0];
 
-	for (int i=1; i<m; i++) {
+	for (int i=1; i<n_components; i++) {
 		if (ln_wgs[i] > aMax)
 			aMax = ln_wgs[i];
 	}
 
 	float sum = 0;
-	for (int i=0; i<m; i++) {
+	for (int i=0; i<n_components; i++) {
 		sum += exp(ln_wgs[i] - aMax);
 	}
 
@@ -130,7 +130,7 @@ __kernel void em1(
 
 	x = rgba2float4(s);
 
-	for (int k=0; k<m; k++) {
+	for (int k=0; k<n_components; k++) {
 		float r = exp(ln_wgs[k] - lpr);
 
 		resp[k*nSamples + gi] = r;
@@ -336,7 +336,6 @@ __kernel void eval(
 		return;
 
 	uint s = samples[gi];
-
 	float4 x = (float4) (1, s & 0x000000FF, (s & 0x0000FF00) >> 8, (s & 0x00FF0000) >> 16);
 	//float4 x2 = pown(x, 2); <-- bug in OpenCL
 

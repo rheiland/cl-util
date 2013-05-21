@@ -2,7 +2,8 @@ import Image
 import time
 from GMM import GMM
 from sklearn import mixture
-from clutil import roundUp, padArray2D
+from clutil import padArray2D
+from clutil import roundUp
 import numpy as np
 import pyopencl as cl
 
@@ -93,7 +94,7 @@ cl.enqueue_copy(queue, gmm.dA, a).wait()
 
 gmm.has_preset_wmc = True
 w,m,c = gmm.fit(dSamples, nSamples, retParams=True)
-print 'converged: {0}'.format(gmm.converged)
+print 'converged: {0}'.format(gmm.has_converged)
 
 print gmm_cpu.weights_
 print w
@@ -125,7 +126,7 @@ dOut = cl.Buffer(context, cm.READ_WRITE | cm.COPY_HOST_PTR, hostbuf=hOut)
 elapsed = 0
 t1 = t2 = 0
 for i in xrange(iter):
-    gmm.converged = False
+    gmm.has_converged = False
 
     t1 = time.time()
     #gmm.fit(samples)
@@ -155,7 +156,7 @@ elapsed = 0
 t1 = t2 = 0
 for i in xrange(iter):
     t1 = time.time()
-    gmm.converged = False
+    gmm.has_converged = False
     #gmm.fit(samples)
 #		w,m,c = gmm.fit(queue, samples, nSamples, weights, means, covars, retParams=True)
     gmm.fit(dSamples, nSamples)
@@ -163,5 +164,7 @@ for i in xrange(iter):
     #gmm.score(dSrc, dOut)
     elapsed += time.time()-t1
 print 'gpu fit: ', elapsed/iter
+
+dScore = cl.Buffer(context, cm.READ_WRITE, 4*nSamples)
 
 True

@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import pyopencl as cl
-from clutil import Buffer2D, roundUp, createProgram
 from StreamCompact import StreamCompact
 
 szFloat =  4
@@ -16,7 +15,7 @@ devices = [devices[1]]
 context = cl.Context(devices)
 queue = cl.CommandQueue(context)
 
-nSamples = 169740
+nSamples = 65536
 capcity = nSamples
 
 streamCompact = StreamCompact(context, devices, capcity)
@@ -41,18 +40,46 @@ print 'flags', hFlags
 compact_cpu = np.where(hFlags == 1)[0]
 assert(np.all(compact_cpu == hList[0:hLength]))
 
+#evaluate performance
 import time
-iterations = 100
+import csv
+from evaluate import global_dims, iterations, tile_dim, columns
 
-t = elapsed = 0
-for i in xrange(iterations):
-    cl.enqueue_copy(queue, dFlags, dFlags).wait()
+res_file = open('results/streamcompact.csv', 'w')
+resWriter = csv.writer(res_file)
 
-    t = time.time()
+resWriter.writerow(columns)
 
-    streamCompact.compact(dFlags, dList, dLength, nSamples)
+for global_dim in global_dims:
+    n_tiles = (global_dim[0]/tile_dim[0])*(global_dim[1]/tile_dim[1])
+    streamCompact = StreamCompact(context, devices, n_tiles)
 
-    elapsed += time.time()-t
-print "%.2f milliseconds per iteration (mean)" % (elapsed / iterations * 1000)
+    dList = streamCompact.listFactory()
+    dFlags = streamCompact.flagFactory()
+    dLength = cl.Buffer(context, cl.mem_flags.READ_WRITE, 1*szInt)
+
+    mp = float(global_dim[0]*global_dim[1])/(1024*1024)
+
+    t = elapsed = 0
+    for i in xrange(iterations):
+        cl.enqueue_copy(queue, dFlags, dFlags).wait()
+
+        t = time.time()
+
+        streamCompact.compact(dFlags, dList, dLength, n_tiles)
+
+        elapsed += time.time()-t
+
+    row = [
+        "({0} {1})".format(global_dim[0], global_dim[1]),
+        mp,
+        "({0} {1})".format(tile_dim[0], tile_dim[1]),
+        n_tiles,
+        (elapsed/iterations * 1000)
+    ]
+
+    resWriter.writerow(row)
+
+    print "{0:.2f}mp: {1:.2f} milliseconds per iteration (mean)".format(mp, (elapsed/iterations * 1000))
 
 True
