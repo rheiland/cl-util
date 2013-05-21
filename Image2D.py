@@ -1,7 +1,4 @@
 import pyopencl as cl
-from clutil import createProgram, roundUp, compareFormat
-import numpy as np
-import os
 
 LWORKGROUP = (16, 16)
 

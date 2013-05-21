@@ -1,8 +1,7 @@
 import os
 import numpy as np
 import pyopencl as cl
-from clutil import Buffer2D, roundUp, createProgram
-from IncrementalTileList import IncrementalTileList, Operator, Logical
+from IncrementalTileList import IncrementalTileList, Operator
 
 szFloat =  4
 szInt = 4
@@ -16,18 +15,18 @@ devices = [devices[1]]
 context = cl.Context(devices)
 queue = cl.CommandQueue(context)
 
-dim = (800, 608)
-shape = (dim[1], dim[0])
-nSamples = dim[0]*dim[1]
+global_dim = (4096, 4096)
+global_shape = (global_dim[1], global_dim[0])
 
-tileList = IncrementalTileList(context, devices, dim, (16, 16))
+tileList = IncrementalTileList(context, devices, global_dim, (16, 16))
+dim = tileList.dim
 
-hTiles = np.random.randint(0, 20, shape).astype(np.int32)
+hTiles = np.random.randint(0, 20, (dim[1], dim[0])).astype(np.int32)
 cl.enqueue_copy(queue, tileList.d_tiles, hTiles).wait()
 
 tileList.build(Operator.GTE, 10)
 
-hList = np.empty((nSamples,), np.int32)
+hList = np.empty((dim[0]*dim[1],), np.int32)
 cl.enqueue_copy(queue, hList, tileList.d_list).wait()
 
 print hTiles
@@ -40,16 +39,39 @@ compact_cpu = np.where(hTiles >= 10)
 compact_cpu = map(lambda x, y: y*dim[0] + x, compact_cpu[1], compact_cpu[0])
 assert(np.all(compact_cpu == hList[0:tileList.length]))
 
+#evaluate performance
 import time
-iterations = 100
+import csv
+from evaluate import global_dims, iterations, tile_dim, columns
 
-t = elapsed = 0
-for i in xrange(iterations):
-    t = time.time()
+res_file = open('results/incremental.csv', 'w')
+resWriter = csv.writer(res_file)
 
-    tileList.build(Operator.GTE, 10)
+resWriter.writerow(columns)
 
-    elapsed += time.time()-t
-print "%.2f milliseconds per iteration (mean)" % (elapsed / iterations * 1000)
+for global_dim in global_dims:
+    tileList = IncrementalTileList(context, devices, global_dim, tile_dim)
+
+    mp = float(global_dim[0]*global_dim[1])/(1024*1024)
+
+    t = elapsed = 0
+    for i in xrange(iterations):
+        t = time.time()
+
+        tileList.build(Operator.GTE, 10)
+
+        elapsed += time.time()-t
+
+    row = [
+            "({0} {1})".format(global_dim[0], global_dim[1]),
+            mp,
+            "({0} {1})".format(tile_dim[0], tile_dim[1]),
+            tileList.dim[0]*tileList.dim[1],
+            (elapsed/iterations * 1000)
+        ]
+
+    resWriter.writerow(row)
+
+    print "{0:.2f}mp: {1:.2f} milliseconds per iteration (mean)".format(mp, (elapsed/iterations * 1000))
 
 True

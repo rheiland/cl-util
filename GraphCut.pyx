@@ -3,37 +3,83 @@ __author__ = 'marcdeklerk'
 import sys, os
 import numpy as np
 import pyopencl as cl
-from IncrementalTileList import IncrementalTileList
 from clutil import createProgram, roundUp
 from Buffer2D import Buffer2D
 from IncrementalTileList import IncrementalTileList, Operator, Logical
+cimport numpy as cnp
 
-szFloat = np.dtype(np.float32).itemsize
-szInt = np.dtype(np.int32).itemsize
-szChar = np.dtype(np.uint8).itemsize
-sz32 = 4
+DEF szFloat = 4
+DEF szInt = 4
+DEF szChar = 1
+DEF sz32 = 4
 
 cm = cl.mem_flags
 
-WAVE_BREDTH = 32
-WAVE_LENGTH = 8
-WAVES_PER_WORKGROUP = 4
+DEF WAVE_BREDTH = 32
+DEF WAVE_LENGTH = 8
+DEF WAVES_PER_WORKGROUP = 4
 
-TILEW = WAVE_BREDTH
-TILEH = (WAVES_PER_WORKGROUP * WAVE_LENGTH)
+DEF TILEW = WAVE_BREDTH
+DEF TILEH = (WAVES_PER_WORKGROUP * WAVE_LENGTH)
 
-class GraphCut:
-    lWorksizeTiles16 = (16, 16)
+DEF LAMDA_DEFAULT = 60
+DEF EPSILON = 0.05
+DEF BFS_DEFAULT = 5
+
+cdef class GraphCut:
+    lWorksize = (16, 16)
     lWorksizeSingleWave = (WAVE_BREDTH, 1)
     lWorksizeWaves = (WAVE_BREDTH, WAVES_PER_WORKGROUP)
     lWorksizeBorderAdd = (WAVE_BREDTH, )
 
-    LAMBDA_DEFAULT = 60
-    EPSILON = 0.05
-    BFS_DEFAULT = 5
+    cdef:
+        readonly float lamda
+        readonly float epsilon
 
-    def __init__(self, context, devices, dImg, lamda=LAMBDA_DEFAULT):
+        object queue
+
+        object kernInitGC
+        object kernLoad_tiles
+        object kernPushUp
+        object kernPushDown
+        object kernPushLeft
+        object kernPushRight
+        object kernRelabel
+        object kernAddBorder
+        object kernInitBfs
+        object kernBfsIntraTile
+        object kernBfsInterTile
+        object kernCheckCompletion
+        object kernFilterTranspose
+
+        cnp.ndarray hIsCompleted
+
+        readonly object dImg,
+        readonly object dUp,
+        readonly object dDown,
+        readonly object dLeft,
+        readonly object dRight,
+        readonly object dHeight,
+        readonly object dHeight2,
+        readonly object dBorder,
+        readonly object dCanUp,
+        readonly object dCanDown,
+        readonly object dCanLeft,
+        readonly object dCanRight,
+        readonly object dIsCompleted
+
+        tuple gWorksize
+        tuple gWorksizeWaves
+        tuple gWorksizeSingleWave
+
+        readonly object tilelistLoad
+        readonly object tilelistBfs
+        readonly object tilelistEdges
+        readonly object tilelistBorder
+
+    def __init__(self, context, devices, dImg, lamda=LAMDA_DEFAULT):
         self.lamda = lamda
+        self.epsilon = EPSILON
 
         dim = dImg.dim
         tilesW = dim[0] / TILEW
@@ -44,7 +90,7 @@ class GraphCut:
         options = []
         options += ['-D MAX_HEIGHT=' + repr(MAX_HEIGHT)]
         options += ['-D LAMBDA=' + repr(lamda)]
-        options += ['-D EPSILON=' + repr(GraphCut.EPSILON)]
+        options += ['-D EPSILON=' + repr(EPSILON)]
         options += ['-D TILESW=' + str(tilesW)]
         options += ['-D TILESH=' + str(tilesH)]
 
@@ -102,7 +148,7 @@ class GraphCut:
         self.tilelistBorder = IncrementalTileList(context, devices, dim, (32,
                                                                           32))
 
-        self.gWorksizeTiles16 = roundUp(dim, GraphCut.lWorksizeTiles16)
+        self.gWorksize = roundUp(dim, self.lWorksize)
         self.gWorksizeWaves = (dim[0], dim[1] / WAVE_LENGTH)
         self.gWorksizeSingleWave = (
             dim[0], dim[1] / (WAVES_PER_WORKGROUP * WAVE_LENGTH))
@@ -186,8 +232,8 @@ class GraphCut:
             self.dHeight2
         ]
 
-        self.kernRelabel(self.queue, self.gWorksizeTiles16,
-            GraphCut.lWorksizeTiles16, *args)
+        self.kernRelabel(self.queue, self.gWorksize,
+            GraphCut.lWorksize, *args)
 
         tmpHeight = self.dHeight
         self.dHeight = self.dHeight2
@@ -197,7 +243,7 @@ class GraphCut:
         gWorksize = (
         WAVE_BREDTH * self.tilelistLoad.length, WAVES_PER_WORKGROUP)
 
-        self.argsPushUpDown = [
+        argsPushUpDown = [
             self.tilelistLoad.d_list,
             self.dDown, self.dUp,
             self.dHeight,
@@ -208,7 +254,7 @@ class GraphCut:
             None
         ]
 
-        self.argsPushLeftRight = [
+        argsPushLeftRight = [
             self.tilelistLoad.d_list,
             dExcess,
             cl.LocalMemory(szFloat * TILEH * (TILEW + 1)),
@@ -221,60 +267,60 @@ class GraphCut:
             None
         ]
 
-        self.argsAddBorder = [
+        argsAddBorder = [
             self.tilelistBorder.d_list,
             self.dBorder,
             dExcess,
             None,
         ]
 
-        self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
+        argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
         self.kernPushDown(self.queue, gWorksize, self.lWorksizeWaves,
-            *self.argsPushUpDown).wait()
+            *argsPushUpDown).wait()
 
         self.tilelistBorder.build()
         if self.tilelistBorder.length:
-            self.argsAddBorder[3] = np.int32(0)
+            argsAddBorder[3] = np.int32(0)
             gWorksizeBorder = (WAVE_BREDTH * self.tilelistBorder.length, )
             self.kernAddBorder(self.queue, gWorksizeBorder,
                 self.lWorksizeBorderAdd,
-                *self.argsAddBorder).wait()
+                *argsAddBorder).wait()
 
-        self.argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
+        argsPushUpDown[8] = np.int32(self.tilelistBorder.increment())
         self.kernPushUp(self.queue, gWorksize, self.lWorksizeWaves,
-            *self.argsPushUpDown).wait()
+            *argsPushUpDown).wait()
 
         self.tilelistBorder.build()
         if self.tilelistBorder.length:
-            self.argsAddBorder[3] = np.int32(1)
+            argsAddBorder[3] = np.int32(1)
             gWorksizeBorder = (WAVE_BREDTH * self.tilelistBorder.length, )
             self.kernAddBorder(self.queue, gWorksizeBorder,
                 self.lWorksizeBorderAdd,
-                *self.argsAddBorder).wait()
+                *argsAddBorder).wait()
 
-        self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
+        argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
         self.kernPushRight(self.queue, gWorksize, self.lWorksizeWaves,
-            *self.argsPushLeftRight).wait()
+            *argsPushLeftRight).wait()
 
         self.tilelistBorder.build()
         if self.tilelistBorder.length:
-            self.argsAddBorder[3] = np.int32(2)
+            argsAddBorder[3] = np.int32(2)
             gWorksizeBorder = (WAVE_BREDTH * self.tilelistBorder.length, )
             self.kernAddBorder(self.queue, gWorksizeBorder,
                 self.lWorksizeBorderAdd,
-                *self.argsAddBorder).wait()
+                *argsAddBorder).wait()
 
-        self.argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
+        argsPushLeftRight[10] = np.int32(self.tilelistBorder.increment())
         self.kernPushLeft(self.queue, gWorksize, self.lWorksizeWaves,
-            *self.argsPushLeftRight).wait()
+            *argsPushLeftRight).wait()
 
         self.tilelistBorder.build()
         if self.tilelistBorder.length:
-            self.argsAddBorder[3] = np.int32(3)
+            argsAddBorder[3] = np.int32(3)
             gWorksizeBorder = (WAVE_BREDTH * self.tilelistBorder.length, )
             self.kernAddBorder(self.queue, gWorksizeBorder,
                 self.lWorksizeBorderAdd,
-                *self.argsAddBorder).wait()
+                *argsAddBorder).wait()
 
     def reset(self):
         self.iteration = 1

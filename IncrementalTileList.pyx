@@ -60,7 +60,7 @@ cdef class IncrementalTileList:
     def __init__(self, context, devices, global_dim, tiles_dim):
         self.h_length = np.empty((1,), np.int32)
 
-        self.dim = (global_dim[0] / tiles_dim[0], global_dim[1] / tiles_dim[1])
+        self.dim = (global_dim[0]/tiles_dim[0], global_dim[1]/tiles_dim[1])
         self.global_dim = global_dim
         self.tiles_dim = tiles_dim
 
@@ -86,8 +86,6 @@ cdef class IncrementalTileList:
             '-D TILEW=' + str(tiles_dim[0]),
             '-D TILEH=' + str(tiles_dim[1])
         ]
-
-        print options
 
         filename = os.path.join(os.path.dirname(__file__),
             'incremental_tile_list.cl')

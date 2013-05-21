@@ -6,11 +6,11 @@
 #endif
 
 #ifndef MIN_COVAR
-#define MIN_COVAR 0.001f
+#define MIN_COVAR 0.001
 #endif
 
 #ifndef INIT_COVAR
-#define INIT_COVAR 10.0f
+#define INIT_COVAR 10.0
 #endif
 
 #define MIN_COVAR4 (float4) (MIN_COVAR, MIN_COVAR, MIN_COVAR, MIN_COVAR)
@@ -18,6 +18,10 @@
 #define INIT_V2 (float4) (0, -1/(2*MIN_COVAR), -1/(2*MIN_COVAR), -1/(2*MIN_COVAR))
 
 #define rgba2float4(c) (float4) (c & 0x000000FF, (c & 0x0000FF00) >> 8, (c & 0x00FF0000) >> 16, 0)
+
+float4 norm_rgba_ui4(uint4 rgba) {
+	return (float4) (((float) rgba.x)/255, ((float) rgba.y)/255, ((float) rgba.z)/255, ((float) rgba.w)/255);
+}
 
 //utility functions
 uint pseudocolorf(float val, float m, float M);
@@ -44,9 +48,10 @@ __kernel void initA(
 	float4 out;
 
 	if (li%2 == 0) {
-		uint mean = samples[li];
+//	    uint mean = samples[li];
+		uint mean = samples[(li/2)*(nSamples-1)/(nComps-1)];
 		out.y = mean & 0x000000FF;
-		out.z = (mean & 0x0000FF00) >> 8;
+		out.z = (mean & 0x0000FF0) >> 8;
 		out.w = (mean & 0x00FF0000) >> 16;
 		float4 mean2 = out*out;
 
@@ -71,7 +76,7 @@ __kernel void em1(
 	__global uint* samples,
 	__global float4* gA,
 	__local float4* sA,
-	int m,
+	int n_components,
 	int nSamples,
 	__global float* resp,
 	__global float4* resp_x,
@@ -82,7 +87,7 @@ __kernel void em1(
 
 	int li = get_local_id(0);
 
-	if (li < m*2) {
+	if (li < n_components*2) {
 		sA[li] = gA[li];
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
@@ -99,7 +104,7 @@ __kernel void em1(
 
 	float ln_wgs[MAX_NCOMPONENT];
 
-	for (int i=0; i<m; i++) {
+	for (int i=0; i<n_components; i++) {
 		int is = i*2;
 
 		float4 a = sA[is];//(float4) (sA[is+0], sA[is+1], sA[is+2], sA[is+3]);
@@ -111,13 +116,13 @@ __kernel void em1(
 
 	float aMax = ln_wgs[0];
 
-	for (int i=1; i<m; i++) {
+	for (int i=1; i<n_components; i++) {
 		if (ln_wgs[i] > aMax)
 			aMax = ln_wgs[i];
 	}
 
 	float sum = 0;
-	for (int i=0; i<m; i++) {
+	for (int i=0; i<n_components; i++) {
 		sum += exp(ln_wgs[i] - aMax);
 	}
 
@@ -125,7 +130,7 @@ __kernel void em1(
 
 	x = rgba2float4(s);
 
-	for (int k=0; k<m; k++) {
+	for (int k=0; k<n_components; k++) {
 		float r = exp(ln_wgs[k] - lpr);
 
 		resp[k*nSamples + gi] = r;
@@ -305,216 +310,6 @@ __kernel void em2(
 	}
 }
 
-
-
-
-__kernel void calc_weights(
-	__global uint* samples,
-	__constant float4* gA,
-	__local float4* sA,
-	int m,
-	int nSamples,
-	__global float* responsibilities,
-	__global float4* means
-) {
-	int gi = get_global_id(0);
-	int gs = get_global_size(0);
-
-	int li = get_local_id(0);
-
-	if (li < m*2) {
-		sA[li] = gA[li];
-	}
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	if (gi > nSamples-1)
-		return;
-
-	uint s = samples[gi];
-	float4 x = (float4) (1, s & 0x000000FF, (s & 0x0000FF00) >> 8, (s & 0x00FF0000) >> 16);
-	//float4 x2 = pown(x, 2); <-- bug in OpenCL
-
-	float4 x2 = x*x;
-	x2[0] = 0;
-
-	float e[MAX_NCOMPONENT];
-
-	for (int i=0; i<m; i++) {
-		int is = i*2;
-
-		float4 a = sA[is];//(float4) (sA[is+0], sA[is+1], sA[is+2], sA[is+3]);
-		e[i] = dot(a, x);
-
-		a = sA[is+1];// (float4) (sA[is+4], sA[is+5], sA[is+6], sA[is+7]);
-		e[i] += dot(a, x2);
-	}
-
-	float eMax = e[0];
-
-	for (int i=1; i<m; i++) {
-		if (e[i] > eMax)
-			eMax = e[i];
-	}
-
-	float sum = 0;
-	for (int i=0; i<m; i++) {
-		sum += exp(e[i] - eMax);
-	}
-
-	float lpr = eMax + log(sum);
-
-	x = rgba2float4(s);
-
-	for (int k=0; k<m; k++) {
-		float r = exp(e[k] - lpr);
-
-		responsibilities[k*nSamples + gi] = r;
-		means[k*nSamples + gi] = r*x;
-	}
-}
-
-__kernel void m_step2(
-	__global float* responsibilities,
-	__global uint* samples,
-	__global float4* means,
-	__local float4* sMeans,
-	int k,
-	int nSamples,
-	__global float4* covars
-)
-{
-	int gi = get_global_id(0);
-	int gs = get_global_size(0);
-
-	int li = get_local_id(0);
-
-	if (li < k) {
-		sMeans[li] = means[li];
-	}
-	barrier(CLK_LOCAL_MEM_FENCE);
-
-	if (gi > nSamples-1)
-		return;
-
-	uint s = samples[gi];
-	float4 x = rgba2float4(s);
-
-	for (int c=0; c<k; c++) {
-		float4 diff = x - sMeans[c];
-		diff *= diff;
-		diff *= responsibilities[c*nSamples + gi];
-
-		covars[c*nSamples + gi] = diff;
-	}
-}
-
-__kernel void m_step1(
-	__global float* responsibilies,
-	__global float4* means,
-	__local float* sResponsibilies,
-	__local float4* sMeans,
-	int k,
-	int nSamples,
-	int nSamplesCurrent,
-	int nSamplesReduced,
-	__global float* responsibilies2,
-	__global float4* means2,
-	__global float* weights
-) {
-	int li = get_local_id(0);
-	int ls = get_local_size(0);
-
-	int wi = get_group_id(0);
-
-	int gi = li + 2*wi*ls;
-
-	for (int c=0; c<k; c++) {
-		//load shared mem
-		if (gi < nSamplesCurrent) {
-			sResponsibilies[li] = responsibilies[c*nSamplesCurrent + gi];
-			sMeans[li] = means[c*nSamplesCurrent + gi];
-			
-			if (gi + ls < nSamplesCurrent) {
-				sResponsibilies[li] += responsibilies[c*nSamplesCurrent + gi + ls];
-				sMeans[li] += means[c*nSamplesCurrent + gi + ls];
-			}
-		}
-		else {
-			sResponsibilies[li] = 0;
-			sMeans[li] = 0;
-		}
-
-		//reduce in shared mem
-		for (int s=ls/2; s>0; s/=2) {
-			if (li < s) {
-				sResponsibilies[li] += sResponsibilies[li + s];
-				sMeans[li] += sMeans[li + s];
-			}
-
-			barrier(CLK_LOCAL_MEM_FENCE);
-		}	
-
-		//write result to global mem
-		if (li == 0) {
-			responsibilies2[c*nSamplesReduced + wi] = sResponsibilies[0];
-
-			if (nSamplesReduced == 1) {
-				means2[c*nSamplesReduced + wi] = (1.0f/sResponsibilies[0]) * sMeans[0];
-				weights[c] = sResponsibilies[0]/nSamples;
-			}
-			else
-				means2[c*nSamplesReduced + wi] = sMeans[0];
-		}
-	}
-}
-
-__kernel void m_step1_0(
-	__global float* responsibilies,
-	__global float4* means,
-	__local float* sResponsibilies,
-	__local float4* sMeans,
-	int m,
-	int nSamples,
-	int nSamplesReduced,
-	__global float* responsibilies2,
-	__global float4* means2
-) {
-	int gi = get_global_id(0);
-	int gs = get_global_size(0);
-
-	int li = get_local_id(0);
-	int ls = get_local_size(0);
-
-	int wi = get_group_id(0);
-
-	float r_sum;
-	float4 m_sum;
-
-	for (int k=0; k<m; k++) {
-		sResponsibilies[li] = responsibilies[k*nSamples + gi];
-		sMeans[li] = means[k*nSamples + gi];
-
-		barrier(CLK_LOCAL_MEM_FENCE);
-
-		if (li == 0) {
-			int sumto = min(ls, nSamples - gi);
-
-			r_sum = 0;
-			m_sum = (float4) (0, 0, 0, 0);
-
-			for (int i=0; i<sumto; i++) {
-				r_sum += sResponsibilies[i];
-				m_sum += sMeans[i];
-			}
-
-			responsibilies2[k*nSamplesReduced + wi] = r_sum;
-			means2[k*nSamplesReduced + wi] = m_sum;
-		}
-
-		barrier(CLK_LOCAL_MEM_FENCE);
-	}
-}
-
 __kernel void eval(
 	__global uint* samples,
 	__constant float4* gA,
@@ -541,7 +336,6 @@ __kernel void eval(
 		return;
 
 	uint s = samples[gi];
-
 	float4 x = (float4) (1, s & 0x000000FF, (s & 0x0000FF00) >> 8, (s & 0x00FF0000) >> 16);
 	//float4 x2 = pown(x, 2); <-- bug in OpenCL
 
@@ -575,13 +369,74 @@ __kernel void eval(
 	out[gi] = -(eMax + log(sum));
 }
 
-__kernel void score(
-	__global uint* src,
+__kernel void score_img2d(
 	__constant float4* gA,
 	__local float4* sA,
-	int nPopulation,
 	int nComponents,
-	__global float* out
+	__global float* out,
+	__read_only image2d_t src,
+	sampler_t sampler,
+	int nPopulation
+) {
+	int gx = get_global_id(0);
+	int gy = get_global_id(1);
+	int gxy = gy*800 + gx;
+
+//	int wi = get_group_id(0); //workgroup id
+//	int ws = get_num_groups(0);
+
+//	int ls = get_local_size(0);
+	int lx = get_local_id(0);
+	int ly = get_local_id(1);
+
+	if (lx < nComponents*2 && ly == 0) {
+		sA[lx] = gA[lx];
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+
+	if (gx > get_image_width(src)-1 || gy > get_image_height(src)-1)
+		return;
+
+	uint4 x4 = (uint4) read_imageui(src, sampler, (int2) (gx, gy));
+	float4 x = (float4) (1, x4.x, x4.y, x4.z);
+
+	float4 x2 = x*x;
+	x2[0] = 0;
+
+	float e[MAX_NCOMPONENT];
+
+	for (int i=0; i<nComponents; i++) {
+		int is = i*2;
+		float4 a = sA[is];//(float4) (sA[is+0], sA[is+1], sA[is+2], sA[is+3]);
+
+		e[i] = dot(a, x);
+		a = sA[is+1];// (float4) (sA[is+4], sA[is+5], sA[is+6], sA[is+7]);
+
+		e[i] += dot(a, x2);
+	}
+
+	float eMax = e[0];
+
+	for (int i=1; i<nComponents; i++) {
+		if (e[i] > eMax)
+			eMax = e[i];
+	}
+
+	float sum = 0;
+	for (int i=0; i<nComponents; i++) {
+		sum += exp(e[i] - eMax);
+	}
+
+	out[gxy] = -(eMax + log(sum));
+}
+
+__kernel void score_buf(
+	__constant float4* gA,
+	__local float4* sA,
+	int nComponents,
+	__global float* out,
+	__global uint* src,
+	int nPopulation
 ) {
 	int gi = get_global_id(0);
 

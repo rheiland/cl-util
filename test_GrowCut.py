@@ -29,20 +29,20 @@ clContext = canvas.context
 devices = clContext.get_info(cl.context_info.DEVICES)
 queue = cl.CommandQueue(clContext, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-shapeNP = (img.size[1], img.size[0])
-shapeNP = roundUp(shapeNP, GrowCut.lw)
-shapeCL = (shapeNP[1], shapeNP[0])
+shape = (img.size[1], img.size[0])
+shape = roundUp(shape, GrowCut.lw)
+dim = (shape[1], shape[0])
 
-hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shapeNP, 'edge')
+hImg = padArray2D(np.array(img).view(np.uint32).squeeze(), shape, 'edge')
 
 dImg = Image2D(clContext,
     cl.mem_flags.READ_ONLY,
     cl.ImageFormat(cl.channel_order.RGBA, cl.channel_type.UNSIGNED_INT8),
-    shapeCL
+    dim
 )
-cl.enqueue_copy(queue, dImg, hImg, origin=(0, 0), region=shapeCL).wait()
+cl.enqueue_copy(queue, dImg, hImg, origin=(0, 0), region=dim).wait()
 
-dStrokes = Buffer2D(clContext, cm.READ_WRITE, shapeCL, dtype=np.uint8)
+dStrokes = Buffer2D(clContext, cm.READ_WRITE, dim, dtype=np.uint8)
 
 brush = Brush(clContext, devices, dStrokes)
 

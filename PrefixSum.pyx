@@ -1,12 +1,13 @@
-# cython: boundscheck=False
-# cython: cdivision=True
-# cython: nonecheck=False
-# cython: wraparound=False
+#cython: boundscheck=False
+#cython: cdivision=True
+#cython: nonecheck=False
+#cython: wraparound=False
 
 import os
 import numpy as np
 import pyopencl as cl
-from clutil import createProgram, roundUp, pow2gt
+from clutil import createProgram, pow2gt, roundUp
+from clutil cimport roundUp_int
 
 from libc.math cimport log
 
@@ -31,12 +32,14 @@ cdef class PrefixSum:
         object kernScan_subarrays
         object kernScan_inc_subarrays
 
+        readonly object elapsed
+
     def __cinit__(self, context, devices, int capacity):
         self.capacity = capacity
 
     def __init__(self, context, devices, int capacity):
         self.context = context
-        self.queue = cl.CommandQueue(context)
+        self.queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
         filename = os.path.join(os.path.dirname(__file__), 'scan/harris/scan.cl')
         program = createProgram(context, devices, [], filename)
@@ -47,16 +50,18 @@ cdef class PrefixSum:
 
         self.lw = (LEN_WORKGROUP, )
 
-        self.capacity = roundUp(capacity, ELEMENTS_PER_WORKGROUP)
+        self.capacity = roundUp_int(capacity, ELEMENTS_PER_WORKGROUP)
 
         self.d_parts = []
 
         len = self.capacity/ELEMENTS_PER_WORKGROUP
 
-        while len > 1:
+        while len > 0:
             self.d_parts.append(cl.Buffer(context, cl.mem_flags.READ_WRITE, szInt*len))
 
             len = len/ELEMENTS_PER_WORKGROUP
+
+        self.elapsed = 0
 
     cpdef factory(self, length=None):
         if length == None:
@@ -79,12 +84,14 @@ cdef class PrefixSum:
         cdef object d_part
 
         if k == 1:
-            self.kernScan_pad_to_pow2(self.queue, gw, self.lw,
+            event = self.kernScan_pad_to_pow2(self.queue, gw, self.lw,
                 dArray,
                 cl.LocalMemory(ELEMENTS_PER_WORKGROUP*szInt),
                 np.int32(length),
                 dTotal
-            ).wait()
+            )
+            event.wait()
+            self.elapsed += (event.profile.end - event.profile.start)
         else:
             if length > self.capacity:
                 raise ValueError('length > self.capacity: {0}, {1}'.format(length, self.capacity))
@@ -92,19 +99,22 @@ cdef class PrefixSum:
                 i = <int> (log(length)/log(ELEMENTS_PER_WORKGROUP))-1
                 d_part = self.d_parts[i]
 
-            self.kernScan_subarrays(self.queue, gw, self.lw,
+            event = self.kernScan_subarrays(self.queue, gw, self.lw,
                 dArray,
                 cl.LocalMemory(ELEMENTS_PER_WORKGROUP*szInt),
                 d_part,
                 np.int32(length),
-            ).wait()
+            )
+            event.wait()
+            self.elapsed += (event.profile.end - event.profile.start)
 
             self.scan(d_part, dTotal, k)
 
-            self.kernScan_inc_subarrays(self.queue, gw, self.lw,
+            event = self.kernScan_inc_subarrays(self.queue, gw, self.lw,
                 dArray,
                 cl.LocalMemory(ELEMENTS_PER_WORKGROUP*szInt),
                 d_part,
                 np.int32(length),
-            ).wait()
-#
+            )
+            event.wait()
+            self.elapsed += (event.profile.end - event.profile.start)

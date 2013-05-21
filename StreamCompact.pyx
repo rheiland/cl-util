@@ -1,12 +1,13 @@
-# cython: boundscheck=False
-# cython: cdivision=True
-# cython: nonecheck=False
-# cython: wraparound=False
+#cython: boundscheck=False
+#cython: cdivision=True
+#cython: nonecheck=False
+#cython: wraparound=False
 
 import os
 import numpy as np
 import pyopencl as cl
-from clutil import roundUp, createProgram
+from clutil import createProgram
+from clutil cimport roundUp_tuple
 from PrefixSum import PrefixSum
 
 from libc.math cimport log
@@ -71,7 +72,7 @@ cdef class StreamCompact:
         cl.enqueue_copy(self.queue, dList, dFlags).wait()
         self.prefix_sum.scan(dList, dLength, length)
 
-        gw = roundUp((length, ), self.lw)
+        gw = roundUp_tuple((length, ), self.lw)
 
         self.kernCompact(self.queue, gw, self.lw,
             dFlags,
