@@ -41,7 +41,7 @@ cdef class PrefixSum:
         self.context = context
         self.queue = cl.CommandQueue(context, properties=cl.command_queue_properties.PROFILING_ENABLE)
 
-        filename = os.path.join(os.path.dirname(__file__), 'scan/harris/scan.cl')
+        filename = os.path.join(os.path.dirname(__file__), 'prefixsum.cl')
         program = createProgram(context, devices, [], filename)
 
         self.kernScan_pad_to_pow2 = cl.Kernel(program, 'scan_pad_to_pow2')
