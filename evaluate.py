@@ -16,7 +16,10 @@ global_dims = [
     (8192, 8192)
 ]
 
-tile_dim = (16, 16)
+tile_dims = [
+    (16, 16),
+    (32, 32)
+]
 
 columns = [
     'res',

@@ -411,7 +411,7 @@ cdef class GraphCut:
                 if self.isCompleted(dExcess):
                     return
 
-#                print 'active tiles:, ', self.tilelistLoad.length
+#                print 'active tiles:, ', self.titlelistLoad.length
             else:
                 self.relabel(dExcess)
 

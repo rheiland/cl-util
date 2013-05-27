@@ -247,8 +247,9 @@ __kernel void em2(
 				float one_over_resp_sum = (1.0f/(s_resp[0]) + 10*FLT_MIN);
 				float weight = s_resp[0]/nSamples;
 				float4 mean = one_over_resp_sum * s_resp_x[0];
-				float4 covar = one_over_resp_sum * (s_resp_x2[0] - 2.0f*mean*s_resp_x[0]) + mean*mean + MIN_COVAR4;
-				
+//				float4 covar = one_over_resp_sum * (s_resp_x2[0] - 2.0f*mean*s_resp_x[0]) + mean*mean + MIN_COVAR4;
+				float4 covar = one_over_resp_sum*s_resp_x2[0] - mean*mean + MIN_COVAR4;
+
 				//resp_back[c] = weight; 
 				//resp_x_back[c] = mean;
 				//resp_x2_back[c] = covar;
